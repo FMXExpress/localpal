@@ -9,6 +9,7 @@ uses
   localpal.Database in 'src\localpal.Database.pas',
   localpal.Config in 'src\localpal.Config.pas',
   localpal.Model in 'src\localpal.Model.pas',
+  localpal.Engine in 'src\localpal.Engine.pas',
   localpal.Chat in 'src\localpal.Chat.pas',
   localpal.Pal in 'src\localpal.Pal.pas',
   localpal.Benchmark in 'src\localpal.Benchmark.pas';

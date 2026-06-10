@@ -15,6 +15,7 @@ type
     cmdModelList, cmdModelAdd, cmdModelUse, cmdModelRemove, cmdModelSearch, cmdModelDownload,
     cmdModelCatalog,
     cmdChatList, cmdChatNew, cmdChatShow, cmdChatSend, cmdChatDelete, cmdChatInteractive,
+    cmdChatQuick, cmdChatAsk,
     cmdPalList, cmdPalAdd, cmdPalRemove, cmdPalUse, cmdPalExport, cmdPalImport,
     cmdBenchmark
   );
@@ -26,6 +27,8 @@ type
     Arg3: string;
     Arg4: string;
     DbPath: string;
+    ModelOverride: string;
+    PalOverride: string;
   end;
 
 procedure PrintHelp;
@@ -41,8 +44,15 @@ begin
   Writeln('================================================================================');
   Writeln('Usage: localpal [options] <command> [args]');
   Writeln;
+  Writeln('Quick Start:');
+  Writeln('  localpal model download smollm   Download a small model (becomes active).');
+  Writeln('  localpal chat                     Start chatting - no IDs required!');
+  Writeln('  localpal chat "<message>"         Ask a single question.');
+  Writeln;
   Writeln('Options:');
   Writeln('  --db <path>           Specify a custom SQLite database path.');
+  Writeln('  --model <name|key>    Use this model for the current command only.');
+  Writeln('  --pal <name>          Use this Pal for the current command only.');
   Writeln('  -h, --help, help      Show this help menu.');
   Writeln('  -v, --version, version Show version information.');
   Writeln;
@@ -50,8 +60,9 @@ begin
   Writeln('  config show           List all configuration variables.');
   Writeln('  config get <key>      Get a configuration value.');
   Writeln('  config set <key> <v>  Set a configuration value.');
-  Writeln('                        Available keys: runner_url, system_prompt,');
-  Writeln('                                        temperature, max_tokens, hf_token.');
+  Writeln('                        Available keys: engine (auto|builtin|runner), runner_url,');
+  Writeln('                                        system_prompt, temperature, max_tokens,');
+  Writeln('                                        n_ctx, n_gpu_layers, lib_dir, hf_token.');
   Writeln;
   Writeln('Model Inventory Commands:');
   Writeln('  model list            List registered models.');
@@ -60,7 +71,7 @@ begin
   Writeln('  model use <name>      Set a model as the active/selected model.');
   Writeln('  model remove <name>   Remove a model from inventory.');
   Writeln('  model search <query>  Search GGUF model repos on Hugging Face.');
-  Writeln('  model download <id|key> Download a model from the built-in catalog.');
+  Writeln('  model download <id|key> Download a model from the built-in catalog and make it active.');
   Writeln('  model download <r> <f> Download GGUF from custom Hugging Face repo <r> with filename <f>.');
   Writeln('                        (Set hf_token to download from gated repositories).');
   Writeln;
@@ -69,21 +80,26 @@ begin
   Writeln('  pal add <n> <r> <p> [m] Register a new Pal with name <n>, role <r>, system prompt <p>,');
   Writeln('                        and optional preferred model constraint [m].');
   Writeln('  pal remove <name>     Remove a Pal from database.');
-  Writeln('  pal use <name> <id>   Assign a Pal to chat session <id>.');
+  Writeln('  pal use <name> <id|s> Assign a Pal to chat session <id|s> (ID or session name).');
   Writeln('  pal export <name> <f> Export a Pal to JSON file <f>.');
   Writeln('  pal import <f>        Import a Pal from JSON file <f>.');
   Writeln;
-  Writeln('Chat Session Commands:');
+  Writeln('Chat Commands (sessions accept an ID or a name everywhere):');
+  Writeln('  chat                  Resume the latest session (or start one) interactively.');
+  Writeln('  chat "<message>"      One-shot question in the latest session.');
+  Writeln('  chat new <name>       Create a session and enter interactive mode.');
   Writeln('  chat list             List all chat sessions.');
-  Writeln('  chat new <name>       Create a new chat session.');
-  Writeln('  chat show <id>        Show messages in chat session <id>.');
-  Writeln('  chat delete <id>      Delete chat session <id>.');
-  Writeln('  chat send <id> "<m>"  Send message "<m>" to session <id> and get response.');
-  Writeln('  chat interactive <id> Start interactive chat loop with session <id>.');
+  Writeln('  chat show <id|name>   Show messages in a chat session.');
+  Writeln('  chat delete <id|name> Delete a chat session.');
+  Writeln('  chat send <id|name> "<m>" Send a message to a specific session.');
+  Writeln('  chat interactive [id|name] Interactive chat (defaults to the latest session).');
   Writeln;
   Writeln('Benchmarking Commands:');
   Writeln('  benchmark [model]     Run standard prompt & token generation speed test on the');
   Writeln('                        active model or specified [model].');
+  Writeln;
+  Writeln('Engine: GGUF models chat in-process via the built-in llama.cpp (llama-cpp-delphi).');
+  Writeln('        Ollama/llama.cpp-server models use the configured runner_url as fallback.');
   Writeln('================================================================================');
 end;
 
@@ -103,10 +119,12 @@ begin
   Result.Arg3 := '';
   Result.Arg4 := '';
   Result.DbPath := '';
+  Result.ModelOverride := '';
+  Result.PalOverride := '';
 
   LArgs := TStringList.Create;
   try
-    // Pre-parse args to strip out --db
+    // Pre-parse args to strip out --db, --model and --pal
     I := 1;
     while I <= ParamCount do
     begin
@@ -120,6 +138,30 @@ begin
         else
         begin
           raise Exception.Create('Error: --db option requires a file path argument.');
+        end;
+      end
+      else if SameText(ParamStr(I), '--model') then
+      begin
+        if I + 1 <= ParamCount then
+        begin
+          Result.ModelOverride := ParamStr(I + 1);
+          Inc(I, 2);
+        end
+        else
+        begin
+          raise Exception.Create('Error: --model option requires a model name or catalog key argument.');
+        end;
+      end
+      else if SameText(ParamStr(I), '--pal') then
+      begin
+        if I + 1 <= ParamCount then
+        begin
+          Result.PalOverride := ParamStr(I + 1);
+          Inc(I, 2);
+        end
+        else
+        begin
+          raise Exception.Create('Error: --pal option requires a Pal name argument.');
         end;
       end
       else
@@ -305,7 +347,9 @@ begin
     begin
       if LArgs.Count < 2 then
       begin
-        raise Exception.Create('Error: chat subcommand requires an action (list, new, show, delete, send, interactive).');
+        // "localpal chat" - jump straight into the latest (or a new) session.
+        Result.Command := cmdChatQuick;
+        Exit;
       end;
 
       var LAction := LArgs[1];
@@ -323,21 +367,21 @@ begin
       else if SameText(LAction, 'show') then
       begin
         if LArgs.Count < 3 then
-          raise Exception.Create('Error: chat show requires <session_id> argument.');
+          raise Exception.Create('Error: chat show requires a <session_id|name> argument.');
         Result.Command := cmdChatShow;
         Result.Arg1 := LArgs[2];
       end
       else if SameText(LAction, 'delete') then
       begin
         if LArgs.Count < 3 then
-          raise Exception.Create('Error: chat delete requires <session_id> argument.');
+          raise Exception.Create('Error: chat delete requires a <session_id|name> argument.');
         Result.Command := cmdChatDelete;
         Result.Arg1 := LArgs[2];
       end
       else if SameText(LAction, 'send') then
       begin
         if LArgs.Count < 4 then
-          raise Exception.Create('Error: chat send requires <session_id> and <message> arguments.');
+          raise Exception.Create('Error: chat send requires <session_id|name> and <message> arguments.');
         Result.Command := cmdChatSend;
         Result.Arg1 := LArgs[2];
         Result.Arg2 := LArgs[3];
@@ -345,13 +389,18 @@ begin
       else if SameText(LAction, 'interactive') then
       begin
         if LArgs.Count < 3 then
-          raise Exception.Create('Error: chat interactive requires <session_id> argument.');
-        Result.Command := cmdChatInteractive;
-        Result.Arg1 := LArgs[2];
+          Result.Command := cmdChatQuick
+        else
+        begin
+          Result.Command := cmdChatInteractive;
+          Result.Arg1 := LArgs[2];
+        end;
       end
       else
       begin
-        raise Exception.Create('Error: Unknown chat action: ' + LAction);
+        // Anything else is a one-shot message: localpal chat "Hello there!"
+        Result.Command := cmdChatAsk;
+        Result.Arg1 := LAction;
       end;
     end
     else if SameText(LFirst, 'benchmark') then
