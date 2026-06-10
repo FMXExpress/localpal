@@ -24,10 +24,10 @@ type
     FEngine: TLlamaEngine;
     function RunBuiltin(const AModelPath: string;
       out APromptTokens, ACompletionTokens: Integer;
-      out ATimeSeconds: Double): Boolean;
+      out APPSpeed, ATGSpeed, ATotalSeconds: Double): Boolean;
     function RunRunner(const AModelName: string;
       out APromptTokens, ACompletionTokens: Integer;
-      out ATimeSeconds: Double): Boolean;
+      out APPSpeed, ATGSpeed, ATotalSeconds: Double): Boolean;
   public
     constructor Create(ADb: TDatabase; AConfig: TConfig; AModelMgr: TModelManager);
     destructor Destroy; override;
@@ -57,17 +57,21 @@ end;
 
 function TBenchmark.RunBuiltin(const AModelPath: string;
   out APromptTokens, ACompletionTokens: Integer;
-  out ATimeSeconds: Double): Boolean;
+  out APPSpeed, ATGSpeed, ATotalSeconds: Double): Boolean;
 var
   LStopwatch: TStopwatch;
-  LUsage: TEngineUsage;
-  LText: string;
   LMessages: TArray<TEngineMessage>;
+  LTokenCount: Integer;
+  LFirstTokenMs: Int64;
+  LTotalMs: Int64;
+  LPPSeconds, LTGSeconds: Double;
 begin
   Result := False;
   APromptTokens := 0;
   ACompletionTokens := 0;
-  ATimeSeconds := 0.0;
+  APPSpeed := 0.0;
+  ATGSpeed := 0.0;
+  ATotalSeconds := 0.0;
 
   try
     LStopwatch := TStopwatch.StartNew;
@@ -81,19 +85,50 @@ begin
       TEngineMessage.Make('user', BENCH_USER_PROMPT)
     ];
 
-    LStopwatch := TStopwatch.StartNew;
-    LText := FEngine.ChatComplete(LMessages, LUsage, 128, 0.1);
-    LStopwatch.Stop;
-
-    ATimeSeconds := LStopwatch.Elapsed.TotalSeconds;
-    APromptTokens := LUsage.PromptTokens;
-    ACompletionTokens := LUsage.CompletionTokens;
-
-    // Heuristics if usage metadata is missing
-    if APromptTokens = 0 then
+    // Count the prompt with the model's own tokenizer (the chat template
+    // adds a few control tokens on top; close enough for a benchmark).
+    APromptTokens := FEngine.CountTokens(BENCH_SYSTEM_PROMPT + sLineBreak + BENCH_USER_PROMPT);
+    if APromptTokens <= 0 then
       APromptTokens := 35;
-    if ACompletionTokens = 0 then
-      ACompletionTokens := LText.Length div 4;
+
+    // Stream the completion: time to the first token approximates the prompt
+    // processing phase, the rest is token generation, and each streamed
+    // chunk is one token.
+    LTokenCount := 0;
+    LFirstTokenMs := 0;
+    LStopwatch := TStopwatch.StartNew;
+    FEngine.Chat(LMessages,
+      procedure(const AToken: string)
+      begin
+        if LTokenCount = 0 then
+          LFirstTokenMs := LStopwatch.ElapsedMilliseconds;
+        Inc(LTokenCount);
+      end,
+      128, 0.1);
+    LStopwatch.Stop;
+    LTotalMs := LStopwatch.ElapsedMilliseconds;
+
+    if LTokenCount = 0 then
+    begin
+      Writeln('Built-in engine produced no tokens.');
+      Exit;
+    end;
+
+    ACompletionTokens := LTokenCount;
+    ATotalSeconds := LTotalMs / 1000.0;
+
+    if LFirstTokenMs <= 0 then
+      LFirstTokenMs := 1;
+    LPPSeconds := LFirstTokenMs / 1000.0;
+    LTGSeconds := (LTotalMs - LFirstTokenMs) / 1000.0;
+    if LTGSeconds <= 0 then
+      LTGSeconds := 0.001;
+
+    APPSpeed := APromptTokens / LPPSeconds;
+    if LTokenCount > 1 then
+      ATGSpeed := (LTokenCount - 1) / LTGSeconds
+    else
+      ATGSpeed := 1 / LTGSeconds;
 
     Result := True;
   except
@@ -104,7 +139,7 @@ end;
 
 function TBenchmark.RunRunner(const AModelName: string;
   out APromptTokens, ACompletionTokens: Integer;
-  out ATimeSeconds: Double): Boolean;
+  out APPSpeed, ATGSpeed, ATotalSeconds: Double): Boolean;
 var
   LStopwatch: TStopwatch;
   LHTTP: THTTPClient;
@@ -120,7 +155,9 @@ begin
   Result := False;
   APromptTokens := 0;
   ACompletionTokens := 0;
-  ATimeSeconds := 0.0;
+  APPSpeed := 0.0;
+  ATGSpeed := 0.0;
+  ATotalSeconds := 0.0;
 
   LUrl := FConfig.GetVal('runner_url', 'http://localhost:11434/v1');
   if not LUrl.EndsWith('/') then
@@ -165,7 +202,7 @@ begin
     try
       LResponse := LHTTP.Post(LUrl, LStringWriter);
       LStopwatch.Stop;
-      ATimeSeconds := LStopwatch.Elapsed.TotalSeconds;
+      ATotalSeconds := LStopwatch.Elapsed.TotalSeconds;
 
       if LResponse.StatusCode = 200 then
       begin
@@ -183,10 +220,10 @@ begin
                 ACompletionTokens := StrToIntDef(LUsage.GetValue('completion_tokens').Value, 0);
             end;
 
-            // Heuristic if runner usage metadata is missing
-            if APromptTokens = 0 then
+            // Heuristics when runner usage metadata is missing or implausible
+            if (APromptTokens <= 0) or (APromptTokens > 100000) then
               APromptTokens := 35; // Standard for our prompt
-            if ACompletionTokens = 0 then
+            if ACompletionTokens <= 0 then
             begin
               var LChoices := LResJSON.GetValue('choices') as TJSONArray;
               if Assigned(LChoices) and (LChoices.Count > 0) then
@@ -198,6 +235,16 @@ begin
                 ACompletionTokens := LContent.Length div 4;
               end;
             end;
+            if ACompletionTokens <= 0 then
+              ACompletionTokens := 40;
+
+            if ATotalSeconds <= 0 then
+              ATotalSeconds := 0.001;
+
+            // The non-streaming runner response gives no PP/TG split; assume
+            // ~15% of the time went to prompt processing.
+            ATGSpeed := ACompletionTokens / ATotalSeconds;
+            APPSpeed := APromptTokens / (ATotalSeconds * 0.15);
 
             Result := True;
           finally
@@ -287,9 +334,11 @@ begin
   end;
 
   if LUseBuiltin then
-    LIsOffline := not RunBuiltin(LModelPath, LPromptTokens, LCompletionTokens, LTimeSeconds)
+    LIsOffline := not RunBuiltin(LModelPath, LPromptTokens, LCompletionTokens,
+      LPPSpeed, LTGSpeed, LTimeSeconds)
   else
-    LIsOffline := not RunRunner(LModelName, LPromptTokens, LCompletionTokens, LTimeSeconds);
+    LIsOffline := not RunRunner(LModelName, LPromptTokens, LCompletionTokens,
+      LPPSpeed, LTGSpeed, LTimeSeconds);
 
   if LIsOffline then
   begin
@@ -305,15 +354,6 @@ begin
     LTGSpeed := 12.4;
     LPPSpeed := 34.2;
     LTimeSeconds := (LCompletionTokens / LTGSpeed) + (LPromptTokens / LPPSpeed);
-  end
-  else
-  begin
-    if LCompletionTokens = 0 then
-      LCompletionTokens := 40;
-    if LTimeSeconds <= 0 then
-      LTimeSeconds := 0.001;
-    LTGSpeed := LCompletionTokens / LTimeSeconds;
-    LPPSpeed := LPromptTokens / (LTimeSeconds * 0.15); // Approximate PP time
   end;
 
   LScore := (LTGSpeed * 0.6) + (LPPSpeed * 0.4);
@@ -331,6 +371,7 @@ begin
   var LBarLimit: Integer;
   LBarLimit := Round(LPPSpeed / 2);
   if LBarLimit > 30 then LBarLimit := 30;
+  if LBarLimit < 0 then LBarLimit := 0;
   for I := 1 to LBarLimit do Write('=');
   for I := LBarLimit + 1 to 30 do Write(' ');
   Writeln(']');
@@ -339,6 +380,7 @@ begin
   Write('  TG Speed Bar            : [');
   LBarLimit := Round(LTGSpeed);
   if LBarLimit > 30 then LBarLimit := 30;
+  if LBarLimit < 0 then LBarLimit := 0;
   for I := 1 to LBarLimit do Write('=');
   for I := LBarLimit + 1 to 30 do Write(' ');
   Writeln(']');
@@ -348,13 +390,13 @@ begin
 
   Write('  Rating                  : ');
   if LScore >= 50.0 then
-    Writeln('🚀 Excellent (High-end GPU/Dedicated NPU)')
+    Writeln('Excellent (High-end GPU/Dedicated NPU)')
   else if LScore >= 25.0 then
-    Writeln('⚡ Good (Mid-range discrete GPU or Apple Silicon)')
+    Writeln('Good (Mid-range discrete GPU or Apple Silicon)')
   else if LScore >= 10.0 then
-    Writeln('✨ Decent (Standard modern CPU with AVX2)')
+    Writeln('Decent (Standard modern CPU with AVX2)')
   else
-    Writeln('🐌 Slow (Legacy hardware or unoptimized setup)');
+    Writeln('Slow (Legacy hardware or unoptimized setup)');
 
   Writeln('================================================================================');
 end;

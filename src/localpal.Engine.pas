@@ -35,7 +35,7 @@ type
   TLlamaEngine = class
   private
     class var FLibsLoaded: Boolean;
-    class procedure LoadLibraries(const ALibDir: string);
+    class procedure LoadLibraries(const ALibDir: string; const AQuiet: Boolean);
   private
     FConfig: TConfig;
     FLlama: TLlama;
@@ -61,14 +61,19 @@ type
     procedure UnloadModel;
 
     // Streams tokens through AOnToken as they are generated and returns the
-    // full response text.
+    // full response text. AMaxTokens/ATemperature override the config values
+    // when >= 0 (used by benchmarking).
     function Chat(const AMessages: TArray<TEngineMessage>;
-      const AOnToken: TTokenCallback): string;
+      const AOnToken: TTokenCallback;
+      const AMaxTokens: Integer = 0;
+      const ATemperature: Single = -1.0): string;
     // Non-streaming variant that reports token usage (used by benchmarking).
     function ChatComplete(const AMessages: TArray<TEngineMessage>;
       out AUsage: TEngineUsage;
       const AMaxTokens: Integer = 0;
       const ATemperature: Single = -1.0): string;
+    // Tokenizes AText with the loaded model's tokenizer and returns the count.
+    function CountTokens(const AText: string): Integer;
 
     property ModelPath: string read FModelPath;
   end;
@@ -82,6 +87,7 @@ uses
   LlamaCpp.Api.Llama,
   LlamaCpp.Api.Ggml,
   LlamaCpp.Api.Llava,
+  LlamaCpp.CType.Ggml,
   LlamaCpp.Common.Chat.Completion.Collection;
 
 const
@@ -98,6 +104,14 @@ const
   LIB_GGML = 'libggml.so';
   LIB_LLAVA = 'libllava_shared.so';
 {$ENDIF MSWINDOWS}
+
+// Swallows llama.cpp's native logging (it dumps full GGUF metadata to the
+// console on every model load by default). Re-enable with engine_log=on.
+procedure QuietLlamaLog(level: TGgmlLogLevel; const text: PAnsiChar;
+  user_data: pointer); cdecl;
+begin
+  //
+end;
 
 { TEngineMessage }
 
@@ -192,7 +206,7 @@ begin
   Result := '';
 end;
 
-class procedure TLlamaEngine.LoadLibraries(const ALibDir: string);
+class procedure TLlamaEngine.LoadLibraries(const ALibDir: string; const AQuiet: Boolean);
 begin
   if FLibsLoaded then
     Exit;
@@ -209,6 +223,9 @@ begin
   // minimal library set shipped with localpal.
   if TFile.Exists(TPath.Combine(ALibDir, LIB_LLAVA)) then
     TLlavaApi.Instance.Load(TPath.Combine(ALibDir, LIB_LLAVA));
+
+  if AQuiet and Assigned(TLlamaApi.Instance.llama_log_set) then
+    TLlamaApi.Instance.llama_log_set(QuietLlamaLog, nil);
 
   FLibsLoaded := True;
 end;
@@ -290,7 +307,7 @@ begin
       ' next to the localpal executable (or in a "llamacpp" subfolder), ' +
       'or point the "lib_dir" config key at them.');
 
-  LoadLibraries(LLibDir);
+  LoadLibraries(LLibDir, not SameText(FConfig.GetVal('engine_log', 'off'), 'on'));
   UnloadModel;
 
   Writeln(Format('[Loading model "%s" with built-in llama.cpp. This may take a moment...]',
@@ -341,7 +358,8 @@ begin
 end;
 
 function TLlamaEngine.Chat(const AMessages: TArray<TEngineMessage>;
-  const AOnToken: TTokenCallback): string;
+  const AOnToken: TTokenCallback; const AMaxTokens: Integer;
+  const ATemperature: Single): string;
 var
   LSettings: TLlamaChatCompletionSettings;
   LResponse: TCreateChatCompletionResponse;
@@ -353,6 +371,10 @@ begin
   if not Assigned(AOnToken) then
   begin
     LSettings := BuildSettings(AMessages, False);
+    if AMaxTokens > 0 then
+      LSettings.MaxTokens := AMaxTokens;
+    if ATemperature >= 0 then
+      LSettings.Temperature := ATemperature;
     LResponse := FLlama.CreateChatCompletion(LSettings);
     if Length(LResponse.Choices) > 0 then
       Exit(VarToStrDef(LResponse.Choices[0].Message.Content, ''));
@@ -360,6 +382,10 @@ begin
   end;
 
   LSettings := BuildSettings(AMessages, True);
+  if AMaxTokens > 0 then
+    LSettings.MaxTokens := AMaxTokens;
+  if ATemperature >= 0 then
+    LSettings.Temperature := ATemperature;
   LBuffer := TStringBuilder.Create;
   try
     FLlama.CreateChatCompletion(
@@ -409,6 +435,14 @@ begin
     Result := VarToStrDef(LResponse.Choices[0].Message.Content, '')
   else
     Result := '';
+end;
+
+function TLlamaEngine.CountTokens(const AText: string): Integer;
+begin
+  if not Assigned(FLlama) then
+    Exit(0);
+
+  Result := Length(FLlama.Tokenize(TEncoding.UTF8.GetBytes(AText), True, True));
 end;
 
 end.
