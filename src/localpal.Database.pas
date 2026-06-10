@@ -113,6 +113,7 @@ begin
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''system_prompt'', ''You are a helpful local AI assistant.'');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''temperature'', ''0.7'');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''max_tokens'', ''512'');');
+  Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''chat_format'', '''');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''n_ctx'', ''4096'');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''n_gpu_layers'', ''0'');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''lib_dir'', '''');');
