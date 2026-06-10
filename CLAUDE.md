@@ -6,10 +6,13 @@ dcc64 -B localpal.dpr
 (or: msbuild localpal.dproj /p:Platform=Win64)
 
 The bundled llama.cpp DLLs are x64, so the project must be built for Win64.
-Unit search paths for the vendored llama-cpp-delphi library live in
-localpal.cfg (command-line dcc) and in DCC_UnitSearchPath in localpal.dproj
-(IDE/msbuild). At runtime, llama.dll/ggml.dll are looked up in the "lib_dir"
-config value, then <exedir>\llamacpp, then next to the executable.
+The vendored llama-cpp-delphi units reference RTL units by their short names
+(e.g. Generics.Collections, Windows), so the build must supply unit scope
+names (namespaces). For command-line dcc this lives in localpal.cfg as -NS
+(System;Winapi;...) alongside the -U unit search paths; for IDE/msbuild it is
+DCC_Namespace + DCC_UnitSearchPath in localpal.dproj. At runtime,
+llama.dll/ggml.dll are looked up in the "lib_dir" config value, then
+<exedir>\llamacpp, then next to the executable.
 
 ## Layout
 - localpal.dpr: Program entry point. Launches the TApp orchestrator.
@@ -47,3 +50,4 @@ Justified by: "offline-first LLM companion", "save/load/history/configurations" 
 - 2026-06-09: Fixed syntax bug in `localpal.Pal.pas` where a `try` block in `GetPal` was missing its `finally` block, causing build failure. Verified with clean compile using dcc32.
 - 2026-06-09: Investigated model loading mechanism and documented that the project uses an external OpenAI-compatible local runner (defaulting to Ollama on http://localhost:11434/v1) rather than loading model files directly.
 - 2026-06-10: Integrated in-process GGUF inference via the vendored llama-cpp-delphi library (new src/localpal.Engine.pas; engine selection in chat and benchmark with runner/Ollama kept as fallback; streaming token output). Overhauled chat CLI ergonomics: `localpal chat` / `chat "<msg>"` with no IDs, session names accepted everywhere, --model/--pal per-invocation overrides, downloads auto-activate. Build moved to Win64 (dcc64/msbuild) because the bundled llama.cpp DLLs are x64. NOT yet compile-verified (no Delphi compiler in the authoring environment).
+- 2026-06-10: Fixed F2613 "Unit 'Generics.Collections' not found" on command-line dcc builds: the vendored library uses short RTL unit names, so added the -NS unit scope names (System;Winapi;...) to localpal.cfg and made the dproj DCC_Namespace explicit about System;Winapi.
