@@ -236,6 +236,7 @@ var
   LIsOffline: Boolean;
   LUseBuiltin: Boolean;
   LEngineMode: string;
+  LReason: string;
 begin
   // Resolve the model under test (explicit arg > active > default tag)
   LModelName := '';
@@ -260,14 +261,17 @@ begin
     LModelName := 'llama3.2:1b'; // Default fallback
 
   // Same engine choice rules as chat
+  LReason := '';
   LEngineMode := FConfig.GetVal('engine', 'auto');
   if SameText(LEngineMode, 'builtin') then
     LUseBuiltin := True
   else if SameText(LEngineMode, 'runner') then
     LUseBuiltin := False
   else
-    LUseBuiltin := LModelPath.ToLower.EndsWith('.gguf') and FileExists(LModelPath)
-      and FEngine.LibrariesAvailable;
+  begin
+    LReason := FEngine.BuiltinUnavailableReason(LModelPath);
+    LUseBuiltin := LReason = '';
+  end;
 
   Writeln('================================================================================');
   Writeln('                          LOCALPAL BENCHMARK UTILITY                            ');
@@ -276,7 +280,11 @@ begin
   if LUseBuiltin then
     Writeln('Engine       : built-in llama.cpp (in-process)')
   else
+  begin
     Writeln('Engine       : local runner');
+    if not LReason.IsEmpty then
+      Writeln('Note         : built-in engine skipped because ' + LReason);
+  end;
 
   if LUseBuiltin then
     LIsOffline := not RunBuiltin(LModelPath, LPromptTokens, LCompletionTokens, LTimeSeconds)
