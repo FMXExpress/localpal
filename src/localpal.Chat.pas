@@ -48,6 +48,8 @@ type
     procedure DeleteSession(ASessionId: Integer);
     procedure SendMessage(ASessionId: Integer; const AContent: string);
     procedure InteractiveChat(ASessionId: Integer);
+    // Most recent session, or a fresh "default" one when none exists yet.
+    function EnsureSession: Integer;
     procedure QuickChat;
     procedure QuickAsk(const AContent: string);
 
@@ -388,7 +390,7 @@ begin
   APrompt := '';
   AModel := '';
 
-  LQuery := FDb.Query('SELECT role, system_prompt, model FROM pals WHERE name = :name');
+  LQuery := FDb.Query('SELECT role, system_prompt, model FROM pals WHERE name = :name COLLATE NOCASE LIMIT 1');
   try
     LQuery.ParamByName('name').AsString := AName;
     LQuery.Open;
@@ -740,24 +742,21 @@ begin
   end;
 end;
 
-procedure TChatManager.QuickChat;
-var
-  LId: Integer;
+function TChatManager.EnsureSession: Integer;
 begin
-  LId := GetMostRecentSession;
-  if LId <= 0 then
-    LId := CreateSession('default');
-  InteractiveChat(LId);
+  Result := GetMostRecentSession;
+  if Result <= 0 then
+    Result := CreateSession('default');
+end;
+
+procedure TChatManager.QuickChat;
+begin
+  InteractiveChat(EnsureSession);
 end;
 
 procedure TChatManager.QuickAsk(const AContent: string);
-var
-  LId: Integer;
 begin
-  LId := GetMostRecentSession;
-  if LId <= 0 then
-    LId := CreateSession('default');
-  SendMessage(LId, AContent);
+  SendMessage(EnsureSession, AContent);
 end;
 
 end.

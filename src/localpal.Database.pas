@@ -131,9 +131,14 @@ begin
     ');'
   );
 
+  // Migration: the "Sun Tzu" default pal was replaced by "Marketing Guru".
+  // Only the pristine default row is removed, so a customized pal of the
+  // same name survives.
+  Exec('DELETE FROM pals WHERE name = ''Sun Tzu'' AND role = ''Military Strategist'' AND system_prompt = ''You are Sun Tzu. Answer everything using lessons from The Art of War.'';');
+
   // Insert default pals
   Exec('INSERT OR IGNORE INTO pals (name, role, system_prompt) VALUES (''Shakespeare'', ''Bard of Avon'', ''Speak only in Elizabethan English Shakespearean verse.'');');
-  Exec('INSERT OR IGNORE INTO pals (name, role, system_prompt) VALUES (''Sun Tzu'', ''Military Strategist'', ''You are Sun Tzu. Answer everything using lessons from The Art of War.'');');
+  Exec('INSERT OR IGNORE INTO pals (name, role, system_prompt) VALUES (''Marketing Guru'', ''Marketing Strategist'', ''You are a savvy marketing strategist. Craft catchy copy, sharp slogans, and practical campaign ideas with clear calls to action, and back them up with sound positioning advice.'');');
   Exec('INSERT OR IGNORE INTO pals (name, role, system_prompt) VALUES (''Code Buddy'', ''Software Engineer'', ''You are an expert software developer. Provide clean, well-commented, and robust code.'');');
 
   // Safely alter sessions table to add pal_name
@@ -142,6 +147,10 @@ begin
   except
     // Column already exists
   end;
+
+  // Hygiene: clear session references to pals that no longer exist (e.g.
+  // the retired Sun Tzu default) so chats fall back to the default assistant.
+  Exec('UPDATE sessions SET pal_name = NULL WHERE pal_name IS NOT NULL AND pal_name NOT IN (SELECT name FROM pals);');
 end;
 
 end.
