@@ -117,6 +117,7 @@ begin
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''n_ctx'', ''4096'');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''n_gpu_layers'', ''0'');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''lib_dir'', '''');');
+  Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''engine_log'', ''off'');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''hf_token'', '''');');
 
   // Create pals table
