@@ -29,6 +29,7 @@ type
     FEngine: TLlamaEngine;
     FModelOverride: string;
     FPalOverride: string;
+    FLastEngineNote: string;
     function CallLocalRunner(const AHistory: TArray<TEngineMessage>; const AModelName: string): string;
     function GetOfflineResponse(const APrompt: string): string;
     function GetPalByName(const AName: string; out ARole, APrompt, AModel: string): Boolean;
@@ -476,6 +477,8 @@ function TChatManager.SelectEngine(const AModelName, AModelPath: string): TChatE
 var
   LMode: string;
 begin
+  FLastEngineNote := '';
+
   if AModelName.IsEmpty then
     Exit(ekOffline);
 
@@ -488,9 +491,10 @@ begin
     Exit(ekRunner);
 
   // auto: chat in-process when the model is a local GGUF file and the
-  // llama.cpp libraries are present; otherwise defer to the runner.
-  if AModelPath.ToLower.EndsWith('.gguf') and FileExists(AModelPath) and
-    FEngine.LibrariesAvailable then
+  // llama.cpp libraries are present; otherwise defer to the runner and
+  // remember why so callers can explain the fallback.
+  FLastEngineNote := FEngine.BuiltinUnavailableReason(AModelPath);
+  if FLastEngineNote.IsEmpty then
     Result := ekBuiltin
   else
     Result := ekRunner;
@@ -614,6 +618,8 @@ begin
           on E: Exception do
           begin
             Writeln('[Local runner offline or timed out. Falling back to offline core...]');
+            if not FLastEngineNote.IsEmpty then
+              Writeln('[Built-in engine was skipped: ' + FLastEngineNote + ']');
             LResponse := GetOfflineResponse(AContent);
           end;
         end;
@@ -690,6 +696,8 @@ begin
       begin
         Writeln('             Active Model: ' + LModelName);
         Writeln('             Engine: local runner @ ' + FConfig.GetVal('runner_url', 'http://localhost:11434/v1'));
+        if not FLastEngineNote.IsEmpty then
+          Writeln('             (built-in engine skipped: ' + FLastEngineNote + ')');
       end;
   else
     begin

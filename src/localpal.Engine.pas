@@ -46,8 +46,14 @@ type
     constructor Create(AConfig: TConfig);
     destructor Destroy; override;
 
+    function LibCandidateDirs: TArray<string>;
     function FindLibDir: string;
     function LibrariesAvailable: Boolean;
+    // '; '-joined list of the directories searched for the native libraries.
+    function SearchedLibDirs: string;
+    // Returns '' if the built-in engine can run AModelPath, otherwise a
+    // human-readable reason why it cannot (used to explain runner fallback).
+    function BuiltinUnavailableReason(const AModelPath: string): string;
 
     procedure EnsureModelLoaded(const AModelPath: string);
     procedure UnloadModel;
@@ -114,6 +120,27 @@ begin
   inherited Destroy;
 end;
 
+function TLlamaEngine.LibCandidateDirs: TArray<string>;
+var
+  LExeDir, LCwd, LConfigured: string;
+begin
+  Result := [];
+
+  LConfigured := FConfig.GetVal('lib_dir');
+  if not LConfigured.IsEmpty then
+    Result := Result + [LConfigured];
+
+  // Next to the executable (and a "llamacpp" subfolder there).
+  LExeDir := TPath.GetDirectoryName(ParamStr(0));
+  Result := Result + [TPath.Combine(LExeDir, 'llamacpp'), LExeDir];
+
+  // The current working directory - handy in dev where the exe builds into
+  // Win64\Debug but the DLLs sit at the project root you run from.
+  LCwd := TDirectory.GetCurrentDirectory;
+  if not SameText(LCwd, LExeDir) then
+    Result := Result + [TPath.Combine(LCwd, 'llamacpp'), LCwd];
+end;
+
 function TLlamaEngine.FindLibDir: string;
 
   function HasLibs(const ADir: string): Boolean;
@@ -124,19 +151,11 @@ function TLlamaEngine.FindLibDir: string;
   end;
 
 var
-  LExeDir: string;
-  LConfigured: string;
+  LDir: string;
 begin
-  LConfigured := FConfig.GetVal('lib_dir');
-  if HasLibs(LConfigured) then
-    Exit(LConfigured);
-
-  LExeDir := TPath.GetDirectoryName(ParamStr(0));
-  if HasLibs(TPath.Combine(LExeDir, 'llamacpp')) then
-    Exit(TPath.Combine(LExeDir, 'llamacpp'));
-
-  if HasLibs(LExeDir) then
-    Exit(LExeDir);
+  for LDir in LibCandidateDirs do
+    if HasLibs(LDir) then
+      Exit(LDir);
 
   Result := '';
 end;
@@ -144,6 +163,30 @@ end;
 function TLlamaEngine.LibrariesAvailable: Boolean;
 begin
   Result := not FindLibDir.IsEmpty;
+end;
+
+function TLlamaEngine.SearchedLibDirs: string;
+begin
+  Result := String.Join('; ', LibCandidateDirs);
+end;
+
+function TLlamaEngine.BuiltinUnavailableReason(const AModelPath: string): string;
+begin
+  if AModelPath.IsEmpty then
+    Exit('no model is selected');
+
+  if not AModelPath.ToLower.EndsWith('.gguf') then
+    Exit('the active model is not a local .gguf file (it looks like a runner/Ollama tag)');
+
+  if not FileExists(AModelPath) then
+    Exit(Format('the model file was not found on disk: "%s"', [AModelPath]));
+
+  if not LibrariesAvailable then
+    Exit(Format('the llama.cpp libraries (%s, %s) were not found. Searched: %s. ' +
+      'Copy them into one of those folders, or run "localpal config set lib_dir <folder>".',
+      [LIB_LLAMA, LIB_GGML, SearchedLibDirs]));
+
+  Result := '';
 end;
 
 class procedure TLlamaEngine.LoadLibraries(const ALibDir: string);
