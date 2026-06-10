@@ -62,6 +62,7 @@ begin
   Writeln('  config set <key> <v>  Set a configuration value.');
   Writeln('                        Available keys: engine (auto|builtin|runner), runner_url,');
   Writeln('                                        system_prompt, temperature, max_tokens,');
+  Writeln('                                        chat_format (chatml, llama-3, qwen, gemma, ...),');
   Writeln('                                        n_ctx, n_gpu_layers, lib_dir, hf_token.');
   Writeln;
   Writeln('Model Inventory Commands:');

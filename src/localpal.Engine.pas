@@ -42,6 +42,8 @@ type
     FModelPath: string;
     function BuildSettings(const AMessages: TArray<TEngineMessage>;
       const AStream: Boolean): TLlamaChatCompletionSettings;
+    function ResolveChatFormat(const AModelPath: string): string;
+    class function GuessChatFormatFromModelName(const AFileName: string): string; static;
   public
     constructor Create(AConfig: TConfig);
     destructor Destroy; override;
@@ -79,7 +81,8 @@ uses
 {$ENDIF MSWINDOWS}
   LlamaCpp.Api.Llama,
   LlamaCpp.Api.Ggml,
-  LlamaCpp.Api.Llava;
+  LlamaCpp.Api.Llava,
+  LlamaCpp.Common.Chat.Completion.Collection;
 
 const
 {$IFDEF MSWINDOWS}
@@ -210,6 +213,66 @@ begin
   FLibsLoaded := True;
 end;
 
+class function TLlamaEngine.GuessChatFormatFromModelName(const AFileName: string): string;
+var
+  LName: string;
+begin
+  LName := AFileName.ToLower;
+
+  // Order matters: more specific names first.
+  if LName.Contains('mistrallite') then Exit('mistrallite');
+  if LName.Contains('mistral') or LName.Contains('mixtral') then Exit('mistral-instruct');
+  if LName.Contains('tinyllama') then Exit('zephyr'); // TinyLlama-Chat uses the Zephyr template
+  if LName.Contains('llama-3') or LName.Contains('llama3') then Exit('llama-3');
+  if LName.Contains('llama-2') or LName.Contains('llama2') then Exit('llama-2');
+  if LName.Contains('qwen') then Exit('qwen');
+  if LName.Contains('gemma') then Exit('gemma');  // also covers Gemmasutra
+  if LName.Contains('smol') then Exit('chatml');  // SmolLM2 / SmolVLM2
+  if LName.Contains('zephyr') then Exit('zephyr');
+  if LName.Contains('phi') then Exit('zephyr');   // Phi-3.x <|user|>/<|assistant|> style; zephyr is the closest named format
+  if LName.Contains('vicuna') then Exit('vicuna');
+  if LName.Contains('alpaca') then Exit('alpaca');
+  if LName.Contains('openchat') then Exit('openchat');
+  if LName.Contains('saiga') then Exit('saiga');
+
+  Result := '';
+end;
+
+function TLlamaEngine.ResolveChatFormat(const AModelPath: string): string;
+begin
+  // The library can auto-detect the chat template from GGUF metadata, but its
+  // fallback for unrecognized templates is an unimplemented Jinja2 formatter
+  // that raises at the first message, and its template matching is
+  // exact-match only (real-world GGUFs rarely match byte-for-byte). So we
+  // always pick one of the registered named formats up front:
+  // config override > model file name guess > chatml.
+  Result := FConfig.GetVal('chat_format');
+  if not Result.IsEmpty then
+  begin
+    // An unknown name would crash the handler lookup, so validate it here.
+    if TLlamaChatCompletionCollection.Instance.GetChatCompletionHandler(Result) = nil then
+    begin
+      Writeln(Format('[Warning: unknown chat_format "%s" (try e.g. chatml, llama-2, llama-3, qwen, gemma, mistral-instruct, zephyr). Auto-detecting instead.]', [Result]));
+      Result := '';
+    end
+    else
+    begin
+      Writeln(Format('[Chat format: "%s" (from "chat_format" config).]', [Result]));
+      Exit;
+    end;
+  end;
+
+  Result := GuessChatFormatFromModelName(TPath.GetFileName(AModelPath));
+  if not Result.IsEmpty then
+  begin
+    Writeln(Format('[Chat format: "%s" (guessed from the model file name; override with "localpal config set chat_format <name>").]', [Result]));
+    Exit;
+  end;
+
+  Result := 'chatml';
+  Writeln('[Chat format: defaulting to "chatml". If replies look garbled, set one explicitly, e.g. "localpal config set chat_format llama-3".]');
+end;
+
 procedure TLlamaEngine.EnsureModelLoaded(const AModelPath: string);
 var
   LLibDir: string;
@@ -238,6 +301,7 @@ begin
     FLlama.ModelPath := AModelPath;
     FLlama.Settings.NCtx := StrToIntDef(FConfig.GetVal('n_ctx', '4096'), 4096);
     FLlama.Settings.NGpuLayers := StrToIntDef(FConfig.GetVal('n_gpu_layers', '0'), 0);
+    FLlama.Settings.ChatFormat := ResolveChatFormat(AModelPath);
     FLlama.Settings.Verbose := False;
     FLlama.Init;
   except
