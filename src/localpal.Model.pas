@@ -121,10 +121,13 @@ type
   public
     constructor Create(ADb: TDatabase);
     procedure ListModels;
-    procedure AddModel(const AName, APath: string; ASizeBytes: Int64 = 0);
+    procedure AddModel(const AName, APath: string; ASizeBytes: Int64 = 0; AActivate: Boolean = False);
     procedure RemoveModel(const AName: string);
     procedure UseModel(const AName: string);
     function GetActiveModel(var AModel: TModelInfo): Boolean;
+    function GetModelByName(const AName: string; var AModel: TModelInfo): Boolean;
+    function ResolveModel(const ASelector: string; var AModel: TModelInfo): Boolean;
+    function EnsureActiveModel(var AModel: TModelInfo): Boolean;
     procedure SearchHuggingFace(const AQuery: string);
     procedure DownloadModel(const ARepoId, AFilename: string);
     procedure ShowCatalog;
@@ -178,7 +181,7 @@ begin
   end;
 end;
 
-procedure TModelManager.AddModel(const AName, APath: string; ASizeBytes: Int64 = 0);
+procedure TModelManager.AddModel(const AName, APath: string; ASizeBytes: Int64 = 0; AActivate: Boolean = False);
 var
   LQuery: TFDQuery;
   LIsFirst: Boolean;
@@ -192,18 +195,21 @@ begin
     LQuery.Free;
   end;
 
+  if AActivate then
+    FDb.Exec('UPDATE models SET is_active = 0');
+
   LQuery := FDb.Query('INSERT OR REPLACE INTO models (name, path, size_bytes, is_active) VALUES (:name, :path, :size_bytes, :is_active)');
   try
     LQuery.ParamByName('name').AsString := AName;
     LQuery.ParamByName('path').AsString := APath;
     LQuery.ParamByName('size_bytes').AsLargeInt := ASizeBytes;
-    if LIsFirst then
+    if LIsFirst or AActivate then
       LQuery.ParamByName('is_active').AsInteger := 1
     else
       LQuery.ParamByName('is_active').AsInteger := 0;
     LQuery.ExecSQL;
     Writeln(Format('Successfully registered model "%s"!', [AName]));
-    if LIsFirst then
+    if LIsFirst or AActivate then
       Writeln(Format('Model "%s" is now set as the active model.', [AName]));
   finally
     LQuery.Free;
@@ -277,6 +283,72 @@ begin
   finally
     LQuery.Free;
   end;
+end;
+
+function TModelManager.GetModelByName(const AName: string; var AModel: TModelInfo): Boolean;
+var
+  LQuery: TFDQuery;
+begin
+  Result := False;
+  LQuery := FDb.Query('SELECT id, name, path, size_bytes, is_active, created_at FROM models WHERE name = :name LIMIT 1');
+  try
+    LQuery.ParamByName('name').AsString := AName;
+    LQuery.Open;
+    if not LQuery.IsEmpty then
+    begin
+      AModel.Id := LQuery.FieldByName('id').AsInteger;
+      AModel.Name := LQuery.FieldByName('name').AsString;
+      AModel.Path := LQuery.FieldByName('path').AsString;
+      AModel.SizeBytes := LQuery.FieldByName('size_bytes').AsLargeInt;
+      AModel.IsActive := LQuery.FieldByName('is_active').AsInteger = 1;
+      AModel.CreatedAt := LQuery.FieldByName('created_at').AsString;
+      Result := True;
+    end;
+  finally
+    LQuery.Free;
+  end;
+end;
+
+function TModelManager.ResolveModel(const ASelector: string; var AModel: TModelInfo): Boolean;
+var
+  I: Integer;
+begin
+  Result := GetModelByName(ASelector, AModel);
+  if Result then
+    Exit;
+
+  // Allow catalog keys (e.g. "smollm") to refer to already-downloaded models.
+  for I := Low(ModelCatalog) to High(ModelCatalog) do
+    if SameText(ModelCatalog[I].Key, ASelector) then
+      Exit(GetModelByName(ModelCatalog[I].Filename, AModel));
+end;
+
+function TModelManager.EnsureActiveModel(var AModel: TModelInfo): Boolean;
+var
+  LQuery: TFDQuery;
+  LName: string;
+begin
+  Result := GetActiveModel(AModel);
+  if Result then
+    Exit;
+
+  // No active model - fall back to the most recently registered one.
+  LName := '';
+  LQuery := FDb.Query('SELECT name FROM models ORDER BY id DESC LIMIT 1');
+  try
+    LQuery.Open;
+    if not LQuery.IsEmpty then
+      LName := LQuery.Fields[0].AsString;
+  finally
+    LQuery.Free;
+  end;
+
+  if LName.IsEmpty then
+    Exit(False);
+
+  Writeln(Format('[No active model set; auto-selecting "%s".]', [LName]));
+  UseModel(LName);
+  Result := GetActiveModel(AModel);
 end;
 
 procedure TModelManager.SearchHuggingFace(const AQuery: string);
@@ -426,7 +498,8 @@ begin
     end;
 
     Writeln('Download complete! Registering model...');
-    AddModel(AFilename, LDestPath, LSizeBytes);
+    AddModel(AFilename, LDestPath, LSizeBytes, True);
+    Writeln('You can start chatting right away: localpal chat');
   finally
     LHTTP.Free;
   end;

@@ -42,6 +42,7 @@
         <DCC_F>false</DCC_F>
         <DCC_K>false</DCC_K>
         <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;$(DCC_Namespace)</DCC_Namespace>
+        <DCC_UnitSearchPath>src;src\llama_cpp;src\llama_cpp\Api;src\llama_cpp\CType\Llama;src\llama_cpp\CType\Llava;src\llama_cpp\CType\Ggml;src\llama_cpp\Wrapper;src\llama_cpp\Common;src\llama_cpp\Common\Grammar;src\llama_cpp\Common\Processor;src\llama_cpp\Common\Sampling;src\llama_cpp\Common\Cache;src\llama_cpp\Common\Chat;src\llama_cpp\Common\Chat\Formatter;src\llama_cpp\Common\Chat\Completion;src\llama_cpp\Common\Tokenizer;src\llama_cpp\Common\Speculative;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
         <SanitizedProjectName>localpal</SanitizedProjectName>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Win32)'!=''">
@@ -79,6 +80,7 @@
         <DCCReference Include="src\localpal.Database.pas"/>
         <DCCReference Include="src\localpal.Config.pas"/>
         <DCCReference Include="src\localpal.Model.pas"/>
+        <DCCReference Include="src\localpal.Engine.pas"/>
         <DCCReference Include="src\localpal.Chat.pas"/>
         <DCCReference Include="src\localpal.Pal.pas"/>
         <DCCReference Include="src\localpal.Benchmark.pas"/>

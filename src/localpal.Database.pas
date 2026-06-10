@@ -108,10 +108,14 @@ begin
   );
 
   // Insert default config values
+  Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''engine'', ''auto'');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''runner_url'', ''http://localhost:11434/v1'');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''system_prompt'', ''You are a helpful local AI assistant.'');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''temperature'', ''0.7'');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''max_tokens'', ''512'');');
+  Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''n_ctx'', ''4096'');');
+  Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''n_gpu_layers'', ''0'');');
+  Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''lib_dir'', '''');');
   Exec('INSERT OR IGNORE INTO config (key, value) VALUES (''hf_token'', '''');');
 
   // Create pals table

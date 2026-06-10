@@ -15,24 +15,43 @@ uses
   FireDAC.Stan.Param,
   localpal.Database,
   localpal.Config,
-  localpal.Model;
+  localpal.Model,
+  localpal.Engine;
 
 type
+  TChatEngineKind = (ekBuiltin, ekRunner, ekOffline);
+
   TChatManager = class
   private
     FDb: TDatabase;
     FConfig: TConfig;
     FModelMgr: TModelManager;
-    function CallLocalRunner(const APrompt: string; const AHistory: TJSONArray; const AModelName: string): string;
+    FEngine: TLlamaEngine;
+    FModelOverride: string;
+    FPalOverride: string;
+    function CallLocalRunner(const AHistory: TArray<TEngineMessage>; const AModelName: string): string;
     function GetOfflineResponse(const APrompt: string): string;
+    function GetPalByName(const AName: string; out ARole, APrompt, AModel: string): Boolean;
+    function GetSessionPal(ASessionId: Integer; out AName, ARole, APrompt, AModel: string): Boolean;
+    procedure ResolveChatModel(const APalModel: string; out AModelName, AModelPath: string);
+    function SelectEngine(const AModelName, AModelPath: string): TChatEngineKind;
+    function BuildHistory(ASessionId: Integer; const ASystemPrompt: string): TArray<TEngineMessage>;
+    function GetMostRecentSession: Integer;
   public
     constructor Create(ADb: TDatabase; AConfig: TConfig; AModelMgr: TModelManager);
+    destructor Destroy; override;
     procedure ListSessions;
     function CreateSession(const AName: string): Integer;
+    function ResolveSession(const AIdOrName: string): Integer;
     procedure ShowSession(ASessionId: Integer);
     procedure DeleteSession(ASessionId: Integer);
     procedure SendMessage(ASessionId: Integer; const AContent: string);
     procedure InteractiveChat(ASessionId: Integer);
+    procedure QuickChat;
+    procedure QuickAsk(const AContent: string);
+
+    property ModelOverride: string read FModelOverride write FModelOverride;
+    property PalOverride: string read FPalOverride write FPalOverride;
   end;
 
 implementation
@@ -43,6 +62,15 @@ begin
   FDb := ADb;
   FConfig := AConfig;
   FModelMgr := AModelMgr;
+  FEngine := TLlamaEngine.Create(AConfig);
+  FModelOverride := '';
+  FPalOverride := '';
+end;
+
+destructor TChatManager.Destroy;
+begin
+  FEngine.Free;
+  inherited Destroy;
 end;
 
 procedure TChatManager.ListSessions;
@@ -75,7 +103,7 @@ begin
       LQuery.Next;
     end;
     if LCount = 0 then
-      Writeln('  No chat sessions found. Start one using: localpal chat new "<name>"');
+      Writeln('  No chat sessions found. Just run "localpal chat" to start one!');
     Writeln('================================================================================');
   finally
     LQuery.Free;
@@ -90,10 +118,59 @@ begin
   try
     LQuery.ParamByName('name').AsString := AName;
     LQuery.ExecSQL;
-    
+
     // Get last insert ID
     Result := FDb.Conn.GetLastAutoGenValue('');
     Writeln(Format('Created new chat session "%s" (ID: %d)!', [AName, Result]));
+  finally
+    LQuery.Free;
+  end;
+end;
+
+function TChatManager.ResolveSession(const AIdOrName: string): Integer;
+var
+  LQuery: TFDQuery;
+  LId: Integer;
+begin
+  Result := -1;
+
+  // Numeric input is treated as a session ID first.
+  if TryStrToInt(AIdOrName, LId) then
+  begin
+    LQuery := FDb.Query('SELECT id FROM sessions WHERE id = :id');
+    try
+      LQuery.ParamByName('id').AsInteger := LId;
+      LQuery.Open;
+      if not LQuery.IsEmpty then
+        Exit(LId);
+    finally
+      LQuery.Free;
+    end;
+  end;
+
+  LQuery := FDb.Query('SELECT id FROM sessions WHERE name = :name');
+  try
+    LQuery.ParamByName('name').AsString := AIdOrName;
+    LQuery.Open;
+    if not LQuery.IsEmpty then
+      Exit(LQuery.FieldByName('id').AsInteger);
+  finally
+    LQuery.Free;
+  end;
+
+  Writeln(Format('Error: No chat session with ID or name "%s". Run "localpal chat list" to see sessions.', [AIdOrName]));
+end;
+
+function TChatManager.GetMostRecentSession: Integer;
+var
+  LQuery: TFDQuery;
+begin
+  Result := 0;
+  LQuery := FDb.Query('SELECT id FROM sessions ORDER BY id DESC LIMIT 1');
+  try
+    LQuery.Open;
+    if not LQuery.IsEmpty then
+      Result := LQuery.FieldByName('id').AsInteger;
   finally
     LQuery.Free;
   end;
@@ -109,16 +186,16 @@ begin
   try
     LQuery.ParamByName('session_id').AsInteger := ASessionId;
     LQuery.Open;
-    
+
     Writeln(Format('========================= CHAT SESSION ID: %d =========================', [ASessionId]));
     if LQuery.IsEmpty then
       Writeln('  (No messages in this chat yet. Type a message or start interactive mode!)');
-      
+
     while not LQuery.Eof do
     begin
       LRole := LQuery.FieldByName('role').AsString.ToUpper;
       LContent := LQuery.FieldByName('content').AsString;
-      
+
       Writeln(Format('[%s]', [LRole]));
       Writeln(LContent);
       Writeln('--------------------------------------------------------------------------------');
@@ -144,11 +221,13 @@ begin
   end;
 end;
 
-function TChatManager.CallLocalRunner(const APrompt: string; const AHistory: TJSONArray; const AModelName: string): string;
+function TChatManager.CallLocalRunner(const AHistory: TArray<TEngineMessage>;
+  const AModelName: string): string;
 var
   LHTTP: THTTPClient;
   LResponse: IHTTPResponse;
   LPayload: TJSONObject;
+  LMessages: TJSONArray;
   LStringWriter: TStringList;
   LUrl: string;
   LTemp: string;
@@ -159,10 +238,19 @@ begin
     LUrl := LUrl + '/';
   LUrl := LUrl + 'chat/completions';
 
+  LMessages := TJSONArray.Create;
+  for var LMsg in AHistory do
+  begin
+    var LMsgObj := TJSONObject.Create;
+    LMsgObj.AddPair('role', LMsg.Role);
+    LMsgObj.AddPair('content', LMsg.Content);
+    LMessages.AddElement(LMsgObj);
+  end;
+
   LPayload := TJSONObject.Create;
   try
     LPayload.AddPair('model', AModelName);
-    LPayload.AddPair('messages', AHistory.Clone as TJSONArray);
+    LPayload.AddPair('messages', LMessages); // payload owns the array now
     LPayload.AddPair('temperature', TJSONNumber.Create(StrToFloatDef(FConfig.GetVal('temperature', '0.7'), 0.7)));
     LMaxTokens := FConfig.GetVal('max_tokens', '512');
     LPayload.AddPair('max_tokens', TJSONNumber.Create(StrToIntDef(LMaxTokens, 512)));
@@ -174,7 +262,7 @@ begin
       LStringWriter := TStringList.Create;
       try
         LStringWriter.Text := LPayload.ToJSON;
-        
+
         // Timeout configuration
         LHTTP.ConnectionTimeout := 5000;
         LHTTP.ResponseTimeout := 60000;
@@ -229,7 +317,7 @@ var
   LQueryLower: string;
 begin
   LQueryLower := APrompt.ToLower;
-  
+
   if LQueryLower.Contains('pascal') or LQueryLower.Contains('delphi') then
   begin
     Result := 'Ah, Object Pascal! A truly magnificent and lightning-fast compiled language. ' + sLineBreak +
@@ -244,15 +332,17 @@ begin
   else if LQueryLower.Contains('hello') or LQueryLower.Contains('hi') or LQueryLower.Contains('hey') then
   begin
     Result := 'Hello there! I am your LocalPal Offline AI fallback. ' + sLineBreak +
-              'I run entirely offline without needing an active GGUF or LLM server. ' + sLineBreak +
-              'To start chatting with a real 7B/8B model, register a model file, download GGUF from ' + sLineBreak +
-              'Hugging Face using "localpal model download", and fire up Ollama or llama.cpp!';
+              'I run entirely offline without needing a model loaded. ' + sLineBreak +
+              'To chat with a real local model, download one from the built-in catalog: ' + sLineBreak +
+              '  localpal model download smollm' + sLineBreak +
+              'and then simply run "localpal chat" again!';
   end
   else if LQueryLower.Contains('who are you') or LQueryLower.Contains('your name') then
   begin
     Result := 'I am LocalPal''s built-in offline core helper! ' + sLineBreak +
-              'Since your Ollama or llama.cpp runner is currently unreachable, I am standing in to help. ' + sLineBreak +
-              'To connect a real local LLM, make sure you configure "runner_url" using: ' + sLineBreak +
+              'No local model is loaded right now, so I am standing in to help. ' + sLineBreak +
+              'Download a model with "localpal model download <key>" (see "localpal model catalog"), ' + sLineBreak +
+              'or configure an external runner with: ' + sLineBreak +
               '  localpal config set runner_url <url>';
   end
   else if LQueryLower.Contains('joke') then
@@ -268,57 +358,61 @@ begin
   else if LQueryLower.Contains('help') then
   begin
     Result := 'LocalPal CLI quick reference:' + sLineBreak +
-              '  - model list              : show registered models' + sLineBreak +
-              '  - model search <query>    : search GGUF models on Hugging Face' + sLineBreak +
-              '  - model download <r> <f>  : download model file from Hugging Face' + sLineBreak +
-              '  - chat interactive <id>   : enter interactive loop for session' + sLineBreak +
-              '  - config set runner_url <u: configure endpoint (e.g., http://localhost:11434)';
+              '  - chat                     : jump straight into an interactive chat' + sLineBreak +
+              '  - chat "<message>"         : ask a single question' + sLineBreak +
+              '  - model catalog            : show built-in models available for download' + sLineBreak +
+              '  - model download <key>     : download a model and make it active' + sLineBreak +
+              '  - model search <query>     : search GGUF models on Hugging Face';
   end
   else
   begin
     Result := 'That is a very interesting thought!' + sLineBreak + sLineBreak +
               '--------------------------------------------------------------------------------' + sLineBreak +
               ' [LocalPal Offline Mode Info]' + sLineBreak +
-              ' Ollama or llama.cpp is not responding on your configured "runner_url".' + sLineBreak +
-              ' To chat with a real AI, please:' + sLineBreak +
-              '   1. Install and start Ollama (https://ollama.com)' + sLineBreak +
-              '   2. Pull a model (e.g. "ollama pull llama3.2:1b")' + sLineBreak +
-              '   3. Activate the model here: "localpal model use llama3.2:1b"' + sLineBreak +
-              '   4. Restart interactive mode!';
+              ' No local model is available yet. To chat with a real AI, please:' + sLineBreak +
+              '   1. Run "localpal model catalog" to see the built-in model catalog' + sLineBreak +
+              '   2. Download one, e.g. "localpal model download smollm"' + sLineBreak +
+              '   3. Run "localpal chat" - the model loads in-process via llama.cpp!' + sLineBreak +
+              ' (Alternatively, start Ollama and run "localpal model add <name> <tag>".)';
   end;
 end;
 
-procedure TChatManager.SendMessage(ASessionId: Integer; const AContent: string);
+function TChatManager.GetPalByName(const AName: string;
+  out ARole, APrompt, AModel: string): Boolean;
 var
-  LActiveModel: TModelInfo;
-  LModelName: string;
   LQuery: TFDQuery;
-  LHistory: TJSONArray;
-  LSystemPrompt: string;
-  LResponse: string;
-  LHasRealModel: Boolean;
-  LPalName: string;
-  LPalRole: string;
-  LPalPrompt: string;
-  LPalModel: string;
-  LHasPal: Boolean;
 begin
-  // Save user message to database
-  LQuery := FDb.Query('INSERT INTO messages (session_id, role, content) VALUES (:session_id, ''user'', :content)');
+  Result := False;
+  ARole := '';
+  APrompt := '';
+  AModel := '';
+
+  LQuery := FDb.Query('SELECT role, system_prompt, model FROM pals WHERE name = :name');
   try
-    LQuery.ParamByName('session_id').AsInteger := ASessionId;
-    LQuery.ParamByName('content').AsString := AContent;
-    LQuery.ExecSQL;
+    LQuery.ParamByName('name').AsString := AName;
+    LQuery.Open;
+    if not LQuery.IsEmpty then
+    begin
+      ARole := LQuery.FieldByName('role').AsString;
+      APrompt := LQuery.FieldByName('system_prompt').AsString;
+      AModel := LQuery.FieldByName('model').AsString;
+      Result := True;
+    end;
   finally
     LQuery.Free;
   end;
+end;
 
-  // Check if session has a Pal
-  LHasPal := False;
-  LPalName := '';
-  LPalRole := '';
-  LPalPrompt := '';
-  LPalModel := '';
+function TChatManager.GetSessionPal(ASessionId: Integer;
+  out AName, ARole, APrompt, AModel: string): Boolean;
+var
+  LQuery: TFDQuery;
+begin
+  Result := False;
+  AName := '';
+  ARole := '';
+  APrompt := '';
+  AModel := '';
 
   LQuery := FDb.Query(
     'SELECT s.pal_name, p.role, p.system_prompt, p.model ' +
@@ -331,18 +425,142 @@ begin
     LQuery.Open;
     if not LQuery.IsEmpty and not LQuery.FieldByName('pal_name').IsNull then
     begin
-      LPalName := LQuery.FieldByName('pal_name').AsString;
-      if not LPalName.IsEmpty then
+      AName := LQuery.FieldByName('pal_name').AsString;
+      if not AName.IsEmpty then
       begin
-        LPalRole := LQuery.FieldByName('role').AsString;
-        LPalPrompt := LQuery.FieldByName('system_prompt').AsString;
-        LPalModel := LQuery.FieldByName('model').AsString;
-        LHasPal := True;
+        ARole := LQuery.FieldByName('role').AsString;
+        APrompt := LQuery.FieldByName('system_prompt').AsString;
+        AModel := LQuery.FieldByName('model').AsString;
+        Result := True;
       end;
     end;
   finally
     LQuery.Free;
   end;
+end;
+
+procedure TChatManager.ResolveChatModel(const APalModel: string;
+  out AModelName, AModelPath: string);
+var
+  LSelector: string;
+  LInfo: TModelInfo;
+begin
+  AModelName := '';
+  AModelPath := '';
+
+  // Priority: --model flag > Pal's preferred model > active model.
+  LSelector := FModelOverride;
+  if LSelector.IsEmpty then
+    LSelector := APalModel;
+
+  if not LSelector.IsEmpty then
+  begin
+    if FModelMgr.ResolveModel(LSelector, LInfo) then
+    begin
+      AModelName := LInfo.Name;
+      AModelPath := LInfo.Path;
+    end
+    else
+      AModelName := LSelector; // raw runner tag (e.g. an Ollama model)
+    Exit;
+  end;
+
+  if FModelMgr.EnsureActiveModel(LInfo) then
+  begin
+    AModelName := LInfo.Name;
+    AModelPath := LInfo.Path;
+  end;
+end;
+
+function TChatManager.SelectEngine(const AModelName, AModelPath: string): TChatEngineKind;
+var
+  LMode: string;
+begin
+  if AModelName.IsEmpty then
+    Exit(ekOffline);
+
+  LMode := FConfig.GetVal('engine', 'auto');
+
+  if SameText(LMode, 'builtin') then
+    Exit(ekBuiltin);
+
+  if SameText(LMode, 'runner') then
+    Exit(ekRunner);
+
+  // auto: chat in-process when the model is a local GGUF file and the
+  // llama.cpp libraries are present; otherwise defer to the runner.
+  if AModelPath.ToLower.EndsWith('.gguf') and FileExists(AModelPath) and
+    FEngine.LibrariesAvailable then
+    Result := ekBuiltin
+  else
+    Result := ekRunner;
+end;
+
+function TChatManager.BuildHistory(ASessionId: Integer;
+  const ASystemPrompt: string): TArray<TEngineMessage>;
+var
+  LQuery: TFDQuery;
+begin
+  Result := [TEngineMessage.Make('system', ASystemPrompt)];
+
+  LQuery := FDb.Query('SELECT role, content FROM messages WHERE session_id = :session_id ORDER BY id ASC');
+  try
+    LQuery.ParamByName('session_id').AsInteger := ASessionId;
+    LQuery.Open;
+    while not LQuery.Eof do
+    begin
+      Result := Result + [TEngineMessage.Make(
+        LQuery.FieldByName('role').AsString,
+        LQuery.FieldByName('content').AsString)];
+      LQuery.Next;
+    end;
+  finally
+    LQuery.Free;
+  end;
+end;
+
+procedure TChatManager.SendMessage(ASessionId: Integer; const AContent: string);
+var
+  LQuery: TFDQuery;
+  LHistory: TArray<TEngineMessage>;
+  LSystemPrompt: string;
+  LResponse: string;
+  LPalName: string;
+  LPalRole: string;
+  LPalPrompt: string;
+  LPalModel: string;
+  LHasPal: Boolean;
+  LModelName: string;
+  LModelPath: string;
+  LHeader: string;
+begin
+  // Save user message to database
+  LQuery := FDb.Query('INSERT INTO messages (session_id, role, content) VALUES (:session_id, ''user'', :content)');
+  try
+    LQuery.ParamByName('session_id').AsInteger := ASessionId;
+    LQuery.ParamByName('content').AsString := AContent;
+    LQuery.ExecSQL;
+  finally
+    LQuery.Free;
+  end;
+
+  // Pal selection: --pal flag wins over the session-assigned Pal
+  LHasPal := False;
+  LPalName := '';
+  LPalRole := '';
+  LPalPrompt := '';
+  LPalModel := '';
+
+  if not FPalOverride.IsEmpty then
+  begin
+    LHasPal := GetPalByName(FPalOverride, LPalRole, LPalPrompt, LPalModel);
+    if LHasPal then
+      LPalName := FPalOverride
+    else
+      Writeln(Format('[Warning: Pal "%s" not found; using the default assistant.]', [FPalOverride]));
+  end;
+  if not LHasPal then
+    LHasPal := GetSessionPal(ASessionId, LPalName, LPalRole, LPalPrompt, LPalModel);
 
   // Set system prompt
   if LHasPal and not LPalPrompt.IsEmpty then
@@ -350,68 +568,67 @@ begin
   else
     LSystemPrompt := FConfig.GetVal('system_prompt', 'You are a helpful local AI assistant.');
 
-  // Retrieve active model or Pal-specific model
-  if LHasPal and not LPalModel.IsEmpty then
-  begin
-    LModelName := LPalModel;
-  end
-  else
-  begin
-    LHasRealModel := FModelMgr.GetActiveModel(LActiveModel);
-    if LHasRealModel then
-      LModelName := LActiveModel.Name
-    else
-      LModelName := 'localpal-offline';
-  end;
+  if not LHasPal then
+    LPalModel := '';
 
-  // Build message history
-  LHistory := TJSONArray.Create;
-  try
-    // Add system message
-    var LSysObj := TJSONObject.Create;
-    LSysObj.AddPair('role', 'system');
-    LSysObj.AddPair('content', LSystemPrompt);
-    LHistory.AddElement(LSysObj);
+  ResolveChatModel(LPalModel, LModelName, LModelPath);
 
-    // Retrieve previous messages
-    LQuery := FDb.Query('SELECT role, content FROM messages WHERE session_id = :session_id ORDER BY id ASC');
-    try
-      LQuery.ParamByName('session_id').AsInteger := ASessionId;
-      LQuery.Open;
-      while not LQuery.Eof do
-      begin
-        var LMsgObj := TJSONObject.Create;
-        LMsgObj.AddPair('role', LQuery.FieldByName('role').AsString);
-        LMsgObj.AddPair('content', LQuery.FieldByName('content').AsString);
-        LHistory.AddElement(LMsgObj);
-        LQuery.Next;
-      end;
-    finally
-      LQuery.Free;
-    end;
+  // Build message history (includes the user message saved above)
+  LHistory := BuildHistory(ASessionId, LSystemPrompt);
 
-    // Contact local runner or fallback
-    try
-      Writeln('Thinking...');
-      LResponse := CallLocalRunner(AContent, LHistory, LModelName);
-    except
-      on E: Exception do
-      begin
-        Writeln('[Local runner offline or timed out. Falling back to offline core...]');
-        LResponse := GetOfflineResponse(AContent);
-      end;
-    end;
-  finally
-    LHistory.Free;
-  end;
-
-  // Print response
   if LHasPal then
-    Writeln(Format('[%s (%s)]', [LPalName.ToUpper, LPalRole.ToUpper]))
+    LHeader := Format('[%s (%s)]', [LPalName.ToUpper, LPalRole.ToUpper])
   else
-    Writeln('[ASSISTANT]');
-    
-  Writeln(LResponse);
+    LHeader := '[ASSISTANT]';
+
+  case SelectEngine(LModelName, LModelPath) of
+    ekBuiltin:
+      begin
+        try
+          FEngine.EnsureModelLoaded(LModelPath);
+          Writeln(LHeader);
+          LResponse := FEngine.Chat(LHistory,
+            procedure(const AToken: string)
+            begin
+              Write(AToken);
+            end);
+          Writeln;
+        except
+          on E: Exception do
+          begin
+            Writeln(Format('[Built-in llama.cpp engine failed: %s]', [E.Message]));
+            Writeln('[Falling back to offline core...]');
+            LResponse := GetOfflineResponse(AContent);
+            Writeln(LHeader);
+            Writeln(LResponse);
+          end;
+        end;
+      end;
+
+    ekRunner:
+      begin
+        try
+          Writeln('Thinking...');
+          LResponse := CallLocalRunner(LHistory, LModelName);
+        except
+          on E: Exception do
+          begin
+            Writeln('[Local runner offline or timed out. Falling back to offline core...]');
+            LResponse := GetOfflineResponse(AContent);
+          end;
+        end;
+        Writeln(LHeader);
+        Writeln(LResponse);
+      end;
+
+  else // ekOffline
+    begin
+      LResponse := GetOfflineResponse(AContent);
+      Writeln(LHeader);
+      Writeln(LResponse);
+    end;
+  end;
+
   Writeln;
 
   // Save assistant message to database
@@ -428,55 +645,83 @@ end;
 procedure TChatManager.InteractiveChat(ASessionId: Integer);
 var
   LInput: string;
-  LActiveModel: TModelInfo;
-  LQuery: TFDQuery;
   LPalName: string;
   LPalRole: string;
+  LPalPrompt: string;
+  LPalModel: string;
   LHasPal: Boolean;
+  LModelName: string;
+  LModelPath: string;
+  LEngineKind: TChatEngineKind;
 begin
   LHasPal := False;
   LPalName := '';
-  LPalRole := '';
 
-  LQuery := FDb.Query('SELECT s.pal_name, p.role FROM sessions s LEFT JOIN pals p ON s.pal_name = p.name WHERE s.id = :session_id');
-  try
-    LQuery.ParamByName('session_id').AsInteger := ASessionId;
-    LQuery.Open;
-    if not LQuery.IsEmpty and not LQuery.FieldByName('pal_name').IsNull then
-    begin
-      LPalName := LQuery.FieldByName('pal_name').AsString;
-      LPalRole := LQuery.FieldByName('role').AsString;
-      LHasPal := not LPalName.IsEmpty;
-    end;
-  finally
-    LQuery.Free;
+  if not FPalOverride.IsEmpty then
+  begin
+    LHasPal := GetPalByName(FPalOverride, LPalRole, LPalPrompt, LPalModel);
+    if LHasPal then
+      LPalName := FPalOverride;
   end;
+  if not LHasPal then
+    LHasPal := GetSessionPal(ASessionId, LPalName, LPalRole, LPalPrompt, LPalModel);
+
+  if not LHasPal then
+    LPalModel := '';
+
+  ResolveChatModel(LPalModel, LModelName, LModelPath);
+  LEngineKind := SelectEngine(LModelName, LModelPath);
 
   Writeln('================================================================================');
   Writeln(Format('             Entering Interactive Chat Session (ID: %d)', [ASessionId]));
-  
+
   if LHasPal then
     Writeln(Format('             Hosted by Pal: %s (%s)', [LPalName, LPalRole]))
   else
     Writeln('             Hosted by: (No Pal Selected - Default Assistant)');
 
-  if FModelMgr.GetActiveModel(LActiveModel) then
-    Writeln('             Active Model: ' + LActiveModel.Name)
+  case LEngineKind of
+    ekBuiltin:
+      begin
+        Writeln('             Active Model: ' + LModelName);
+        Writeln('             Engine: built-in llama.cpp (in-process)');
+      end;
+    ekRunner:
+      begin
+        Writeln('             Active Model: ' + LModelName);
+        Writeln('             Engine: local runner @ ' + FConfig.GetVal('runner_url', 'http://localhost:11434/v1'));
+      end;
   else
-    Writeln('             Active Model: NONE (Fallback Offline Helper)');
+    begin
+      Writeln('             Active Model: NONE (Fallback Offline Helper)');
+      Writeln('             Tip: download one with "localpal model download smollm"');
+    end;
+  end;
+
   Writeln('             Type /exit or /quit to exit.');
   Writeln('================================================================================');
   Writeln;
+
+  // Load the model once up front so the first reply doesn't pay the cost.
+  if LEngineKind = ekBuiltin then
+  begin
+    try
+      FEngine.EnsureModelLoaded(LModelPath);
+    except
+      on E: Exception do
+        Writeln(Format('[Built-in engine failed to load model: %s]', [E.Message]));
+    end;
+  end;
 
   while True do
   begin
     Write('[USER]> ');
     Readln(LInput);
     LInput := LInput.Trim;
-    
+
     if LInput.IsEmpty then
       Continue;
-      
+
     if (LInput = '/exit') or (LInput = '/quit') then
     begin
       Writeln('Exiting interactive mode.');
@@ -485,6 +730,26 @@ begin
 
     SendMessage(ASessionId, LInput);
   end;
+end;
+
+procedure TChatManager.QuickChat;
+var
+  LId: Integer;
+begin
+  LId := GetMostRecentSession;
+  if LId <= 0 then
+    LId := CreateSession('default');
+  InteractiveChat(LId);
+end;
+
+procedure TChatManager.QuickAsk(const AContent: string);
+var
+  LId: Integer;
+begin
+  LId := GetMostRecentSession;
+  if LId <= 0 then
+    LId := CreateSession('default');
+  SendMessage(LId, AContent);
 end;
 
 end.

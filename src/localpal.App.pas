@@ -114,6 +114,10 @@ begin
       end;
     end;
 
+    // Apply per-invocation chat overrides from --model / --pal flags
+    FChatMgr.ModelOverride := FOpts.ModelOverride;
+    FChatMgr.PalOverride := FOpts.PalOverride;
+
     // Dispatch Command
     try
       case FOpts.Command of
@@ -176,7 +180,13 @@ begin
           FPalMgr.RemovePal(FOpts.Arg1);
           
         cmdPalUse:
-          FPalMgr.UsePal(FOpts.Arg1, StrToIntDef(FOpts.Arg2, 0));
+          begin
+            var LPalSession := FChatMgr.ResolveSession(FOpts.Arg2);
+            if LPalSession > 0 then
+              FPalMgr.UsePal(FOpts.Arg1, LPalSession)
+            else
+              Result := 1;
+          end;
           
         cmdPalExport:
           FPalMgr.ExportPal(FOpts.Arg1, FOpts.Arg2);
@@ -186,35 +196,61 @@ begin
           
         cmdChatList:
           FChatMgr.ListSessions;
-          
+
         cmdChatNew:
           begin
-            FChatMgr.CreateSession(FOpts.Arg1);
+            var LNewSession := FChatMgr.CreateSession(FOpts.Arg1);
+            FChatMgr.InteractiveChat(LNewSession);
           end;
-          
+
         cmdChatShow:
           begin
-            FChatMgr.ShowSession(StrToIntDef(FOpts.Arg1, 0));
+            var LSession := FChatMgr.ResolveSession(FOpts.Arg1);
+            if LSession > 0 then
+              FChatMgr.ShowSession(LSession)
+            else
+              Result := 1;
           end;
-          
+
         cmdChatDelete:
           begin
-            FChatMgr.DeleteSession(StrToIntDef(FOpts.Arg1, 0));
+            var LSession := FChatMgr.ResolveSession(FOpts.Arg1);
+            if LSession > 0 then
+              FChatMgr.DeleteSession(LSession)
+            else
+              Result := 1;
           end;
-          
+
         cmdChatSend:
           begin
-            FChatMgr.SendMessage(StrToIntDef(FOpts.Arg1, 0), FOpts.Arg2);
+            var LSession := FChatMgr.ResolveSession(FOpts.Arg1);
+            if LSession > 0 then
+              FChatMgr.SendMessage(LSession, FOpts.Arg2)
+            else
+              Result := 1;
           end;
-          
+
         cmdChatInteractive:
           begin
-            FChatMgr.InteractiveChat(StrToIntDef(FOpts.Arg1, 0));
+            var LSession := FChatMgr.ResolveSession(FOpts.Arg1);
+            if LSession > 0 then
+              FChatMgr.InteractiveChat(LSession)
+            else
+              Result := 1;
           end;
-          
+
+        cmdChatQuick:
+          FChatMgr.QuickChat;
+
+        cmdChatAsk:
+          FChatMgr.QuickAsk(FOpts.Arg1);
+
         cmdBenchmark:
           begin
-            FBenchmark.RunBenchmark(FOpts.Arg1);
+            if FOpts.Arg1.IsEmpty then
+              FBenchmark.RunBenchmark(FOpts.ModelOverride)
+            else
+              FBenchmark.RunBenchmark(FOpts.Arg1);
           end;
           
         else
