@@ -114,7 +114,7 @@ var
   LQuery: TFDQuery;
 begin
   // Check if it's one of the default pals
-  if SameText(AName, 'Shakespeare') or SameText(AName, 'Sun Tzu') or SameText(AName, 'Code Buddy') then
+  if SameText(AName, 'Shakespeare') or SameText(AName, 'Marketing Guru') or SameText(AName, 'Code Buddy') then
     Writeln('Warning: You are removing a default Pal.');
 
   LQuery := FDb.Query('DELETE FROM pals WHERE name = :name');
@@ -122,6 +122,16 @@ begin
     LQuery.ParamByName('name').AsString := AName;
     LQuery.ExecSQL;
     Writeln(Format('Pal "%s" has been removed from your local database.', [AName]));
+  finally
+    LQuery.Free;
+  end;
+
+  // Detach the removed pal from any sessions so they fall back to the
+  // default assistant instead of referencing a ghost.
+  LQuery := FDb.Query('UPDATE sessions SET pal_name = NULL WHERE pal_name = :name');
+  try
+    LQuery.ParamByName('name').AsString := AName;
+    LQuery.ExecSQL;
   finally
     LQuery.Free;
   end;
@@ -134,7 +144,7 @@ var
 begin
   if not GetPal(AName, LPal) then
   begin
-    Writeln(Format('Error: Pal "%s" is not registered. Register it first using "pal add".', [AName]));
+    Writeln(Format('Error: Pal "%s" is not registered. Run "localpal pal list" to see the available Pals.', [AName]));
     Exit;
   end;
 
@@ -152,13 +162,15 @@ begin
     LQuery.Free;
   end;
 
-  // Associate pal
+  // Associate pal. Store the pal's canonical name (GetPal matches
+  // case-insensitively, but the chat session join is case-sensitive).
   LQuery := FDb.Query('UPDATE sessions SET pal_name = :pal_name WHERE id = :id');
   try
-    LQuery.ParamByName('pal_name').AsString := AName;
+    LQuery.ParamByName('pal_name').AsString := LPal.Name;
     LQuery.ParamByName('id').AsInteger := ASessionId;
     LQuery.ExecSQL;
-    Writeln(Format('Chat session ID %d is now hosted by Pal "%s" (%s)!', [ASessionId, AName, LPal.Role]));
+    Writeln(Format('Chat session ID %d is now hosted by Pal "%s" (%s)!', [ASessionId, LPal.Name, LPal.Role]));
+    Writeln('Start talking with: localpal chat');
     if not LPal.Model.IsEmpty then
       Writeln(Format('Note: This Pal prefers to run on the "%s" model.', [LPal.Model]));
   finally

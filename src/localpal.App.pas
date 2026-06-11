@@ -181,7 +181,11 @@ begin
           
         cmdPalUse:
           begin
-            var LPalSession := FChatMgr.ResolveSession(FOpts.Arg2);
+            var LPalSession: Integer;
+            if FOpts.Arg2.IsEmpty then
+              LPalSession := FChatMgr.EnsureSession
+            else
+              LPalSession := FChatMgr.ResolveSession(FOpts.Arg2);
             if LPalSession > 0 then
               FPalMgr.UsePal(FOpts.Arg1, LPalSession)
             else

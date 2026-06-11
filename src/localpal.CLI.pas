@@ -82,7 +82,9 @@ begin
   Writeln('  pal add <n> <r> <p> [m] Register a new Pal with name <n>, role <r>, system prompt <p>,');
   Writeln('                        and optional preferred model constraint [m].');
   Writeln('  pal remove <name>     Remove a Pal from database.');
-  Writeln('  pal use <name> <id|s> Assign a Pal to chat session <id|s> (ID or session name).');
+  Writeln('  pal use <name> [sess] Assign a Pal to a chat session (ID or name).');
+  Writeln('                        Without [sess] it applies to the latest session,');
+  Writeln('                        i.e. the one "localpal chat" opens.');
   Writeln('  pal export <name> <f> Export a Pal to JSON file <f>.');
   Writeln('  pal import <f>        Import a Pal from JSON file <f>.');
   Writeln;
@@ -319,11 +321,12 @@ begin
       end
       else if SameText(LAction, 'use') then
       begin
-        if LArgs.Count < 4 then
-          raise Exception.Create('Error: pal use requires <pal_name> and <chat_session_id> arguments.');
+        if LArgs.Count < 3 then
+          raise Exception.Create('Error: pal use requires a <pal_name> argument.');
         Result.Command := cmdPalUse;
         Result.Arg1 := LArgs[2];
-        Result.Arg2 := LArgs[3];
+        if LArgs.Count >= 4 then
+          Result.Arg2 := LArgs[3]; // optional session; defaults to the latest
       end
       else if SameText(LAction, 'export') then
       begin
