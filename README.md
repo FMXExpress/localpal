@@ -85,7 +85,7 @@ localpal chat delete <id|name>      Delete a session.
 
 ```
 localpal model catalog              Show the built-in model catalog (low-end models).
-localpal model catalog --all        Also show high-end models (Qwen 3.6, Gemma 4; need 24GB+).
+localpal model catalog --all        Also show high-end (24GB+) and server-class (64GB+, multi-shard) models.
 localpal model download <id|key>    Download a catalog model (becomes the active model).
 localpal model download <repo> <f>  Download any GGUF from a Hugging Face repo.
 localpal model search <query>       Search GGUF repos on Hugging Face.

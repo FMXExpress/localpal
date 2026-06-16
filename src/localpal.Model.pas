@@ -8,6 +8,7 @@ uses
   System.SysUtils,
   System.Classes,
   System.JSON,
+  System.RegularExpressions,
   System.Net.HttpClient,
   System.Net.URLClient,
   System.NetEncoding,
@@ -27,7 +28,7 @@ type
     CreatedAt: string;
   end;
 
-  TModelTier = (mtLowEnd, mtHighEnd);
+  TModelTier = (mtLowEnd, mtHighEnd, mtServer);
 
   TCatalogItem = record
     Id: Integer;
@@ -41,7 +42,7 @@ type
   end;
 
 const
-  ModelCatalog: array[0..15] of TCatalogItem = (
+  ModelCatalog: array[0..18] of TCatalogItem = (
     // --- Low-end: run on CPU or small GPUs ---
     (
       Id: 1;
@@ -203,6 +204,37 @@ const
       Description: 'MoE (3B active) coding specialist; fast 30B-class agentic coder.';
       Tier: mtHighEnd;
       MinRamGB: 32
+    ),
+    // --- Server-class: 64GB+ RAM / multi-GPU, large multi-shard downloads ---
+    (
+      Id: 17;
+      Key: 'gptoss';
+      Name: 'GPT-OSS 120B';
+      RepoId: 'unsloth/gpt-oss-120b-GGUF';
+      Filename: 'gpt-oss-120b-F16.gguf';
+      Description: 'OpenAI''s 120B MoE; ~65GB single file. Very fast, not the smartest.';
+      Tier: mtServer;
+      MinRamGB: 80
+    ),
+    (
+      Id: 18;
+      Key: 'qwen122b';
+      Name: 'Qwen 3.5 122B-A10B';
+      RepoId: 'unsloth/Qwen3.5-122B-A10B-MTP-GGUF';
+      Filename: 'UD-Q4_K_XL/Qwen3.5-122B-A10B-UD-Q4_K_XL-00001-of-00003.gguf';
+      Description: 'MoE (10B active); ~89GB across 3 shards. Strong general model for big rigs.';
+      Tier: mtServer;
+      MinRamGB: 96
+    ),
+    (
+      Id: 19;
+      Key: 'glm47';
+      Name: 'GLM-4.7';
+      RepoId: 'unsloth/GLM-4.7-GGUF';
+      Filename: 'UD-Q4_K_XL/GLM-4.7-UD-Q4_K_XL-00001-of-00005.gguf';
+      Description: 'Large flagship; ~205GB across 5 shards. Tip: config set chat_format chatglm3.';
+      Tier: mtServer;
+      MinRamGB: 224
     )
   );
 
@@ -212,6 +244,7 @@ type
     FDb: TDatabase;
     FLastPercent: Integer;
     procedure HTTPReceiveData(const Sender: TObject; AContentLength: Int64; AReadCount: Int64; var Abort: Boolean);
+    function DownloadOneFile(const AUrl, ADestPath: string; out ASizeBytes: Int64): Boolean;
   public
     constructor Create(ADb: TDatabase);
     procedure ListModels;
@@ -532,71 +565,151 @@ begin
   end;
 end;
 
-procedure TModelManager.DownloadModel(const ARepoId, AFilename: string);
+function TModelManager.DownloadOneFile(const AUrl, ADestPath: string; out ASizeBytes: Int64): Boolean;
 var
   LHTTP: THTTPClient;
   LResponse: IHTTPResponse;
-  LUrl: string;
-  LModelsDir: string;
-  LDestPath: string;
   LFileStream: TFileStream;
-  LSizeBytes: Int64;
 begin
-  LUrl := Format('https://huggingface.co/%s/resolve/main/%s', [ARepoId, AFilename]);
-  LModelsDir := IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + 'models' + PathDelim;
-  
-  if not ForceDirectories(LModelsDir) then
-  begin
-    Writeln('Error: Could not create models directory: ' + LModelsDir);
-    Exit;
-  end;
-
-  LDestPath := LModelsDir + AFilename;
-  Writeln('Connecting to Hugging Face...');
-  Writeln('Source: ' + LUrl);
-  Writeln('Target: ' + LDestPath);
+  Result := False;
+  ASizeBytes := 0;
 
   LHTTP := THTTPClient.Create;
   try
     LHTTP.OnReceiveData := HTTPReceiveData;
     FLastPercent := -1;
 
-    LFileStream := TFileStream.Create(LDestPath, fmCreate);
+    LFileStream := TFileStream.Create(ADestPath, fmCreate);
     try
       try
-        LResponse := LHTTP.Get(LUrl, LFileStream);
+        LResponse := LHTTP.Get(AUrl, LFileStream);
         Writeln; // Move to next line after progress output
-
-        if LResponse.StatusCode <> 200 then
+        if LResponse.StatusCode = 200 then
         begin
-          Writeln(Format('Error downloading model: HTTP %d %s', [LResponse.StatusCode, LResponse.StatusText]));
-          LFileStream.Free; // Free first so we can delete the failed file
-          DeleteFile(LDestPath);
-          Exit;
-        end;
-
-        LSizeBytes := LFileStream.Size;
+          ASizeBytes := LFileStream.Size;
+          Result := True;
+        end
+        else
+          Writeln(Format('Error downloading: HTTP %d %s', [LResponse.StatusCode, LResponse.StatusText]));
       except
         on E: Exception do
         begin
           Writeln;
           Writeln('Exception during download: ' + E.Message);
-          LFileStream.Free;
-          DeleteFile(LDestPath);
-          Exit;
         end;
       end;
     finally
-      if Assigned(LFileStream) and (LFileStream.Handle <> THandle(-1)) then
-        LFileStream.Free;
+      LFileStream.Free;
     end;
-
-    Writeln('Download complete! Registering model...');
-    AddModel(AFilename, LDestPath, LSizeBytes, True);
-    Writeln('You can start chatting right away: localpal chat');
   finally
     LHTTP.Free;
   end;
+
+  if not Result then
+    DeleteFile(ADestPath);
+end;
+
+procedure TModelManager.DownloadModel(const ARepoId, AFilename: string);
+var
+  LModelsDir: string;
+  LMatch: TMatch;
+  LDir, LBaseFirst, LPrefix, LTotStr: string;
+  LIdxWidth, LTotal, I, LSlash: Integer;
+  LPartRepo, LPartBase, LPartLocal, LNum, LUrl, LFirstLocal: string;
+  LSize, LTotalSize: Int64;
+  LParts: TArray<string>;
+  LPart: string;
+  LFailed: Boolean;
+begin
+  LModelsDir := IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + 'models' + PathDelim;
+  if not ForceDirectories(LModelsDir) then
+  begin
+    Writeln('Error: Could not create models directory: ' + LModelsDir);
+    Exit;
+  end;
+
+  // Hugging Face paths use '/'. Split any quant subdirectory from the base name.
+  LSlash := LastDelimiter('/', AFilename);
+  if LSlash > 0 then
+  begin
+    LDir := Copy(AFilename, 1, LSlash);                 // e.g. 'UD-Q4_K_XL/'
+    LBaseFirst := Copy(AFilename, LSlash + 1, MaxInt);  // first-part base name
+  end
+  else
+  begin
+    LDir := '';
+    LBaseFirst := AFilename;
+  end;
+
+  LMatch := TRegEx.Match(LBaseFirst, '^(.*-)(\d+)-of-(\d+)\.gguf$');
+
+  // -------- Single-file model (unchanged behavior) --------
+  if not LMatch.Success then
+  begin
+    LUrl := Format('https://huggingface.co/%s/resolve/main/%s', [ARepoId, AFilename]);
+    LFirstLocal := LModelsDir + LBaseFirst;
+    Writeln('Connecting to Hugging Face...');
+    Writeln('Source: ' + LUrl);
+    Writeln('Target: ' + LFirstLocal);
+    if DownloadOneFile(LUrl, LFirstLocal, LSize) then
+    begin
+      Writeln('Download complete! Registering model...');
+      AddModel(LBaseFirst, LFirstLocal, LSize, True);
+      Writeln('You can start chatting right away: localpal chat');
+    end;
+    Exit;
+  end;
+
+  // -------- Sharded model: download every part, register the first --------
+  LPrefix := LMatch.Groups[1].Value;            // name up to the index dash
+  LIdxWidth := Length(LMatch.Groups[2].Value);  // zero-pad width (e.g. 5)
+  LTotStr := LMatch.Groups[3].Value;            // total, as written (e.g. '00003')
+  LTotal := StrToIntDef(LTotStr, 0);
+  if LTotal <= 0 then
+  begin
+    Writeln('Error: could not parse the shard count from "' + AFilename + '".');
+    Exit;
+  end;
+
+  Writeln(Format('Connecting to Hugging Face (%d-part model)...', [LTotal]));
+  Writeln('Note: server-class models are large - this can be tens to hundreds of GB.');
+  LTotalSize := 0;
+  LParts := [];
+  LFailed := False;
+
+  for I := 1 to LTotal do
+  begin
+    LNum := IntToStr(I);
+    while Length(LNum) < LIdxWidth do
+      LNum := '0' + LNum;
+
+    LPartBase := LPrefix + LNum + '-of-' + LTotStr + '.gguf';
+    LPartRepo := LDir + LPartBase;          // repo-relative path (keeps subdir)
+    LPartLocal := LModelsDir + LPartBase;   // stored flat so siblings sit together
+    LUrl := Format('https://huggingface.co/%s/resolve/main/%s', [ARepoId, LPartRepo]);
+
+    Writeln(Format('Part %d of %d: %s', [I, LTotal, LPartBase]));
+    if not DownloadOneFile(LUrl, LPartLocal, LSize) then
+    begin
+      LFailed := True;
+      Break;
+    end;
+    LParts := LParts + [LPartLocal];
+    LTotalSize := LTotalSize + LSize;
+  end;
+
+  if LFailed then
+  begin
+    Writeln('Download failed; removing the partial shards.');
+    for LPart in LParts do
+      DeleteFile(LPart);
+    Exit;
+  end;
+
+  Writeln('All parts downloaded! Registering model...');
+  // Register the first shard; llama.cpp auto-loads the rest from the same folder.
+  AddModel(LBaseFirst, LModelsDir + LBaseFirst, LTotalSize, True);
+  Writeln('You can start chatting right away: localpal chat');
 end;
 
 procedure TModelManager.ShowCatalog(AShowHighEnd: Boolean = False);
@@ -633,11 +746,25 @@ begin
           IntToStr(ModelCatalog[I].MinRamGB) + 'GB',
           ModelCatalog[I].Description
         ]));
+
+    Writeln;
+    Writeln('  Server-class models - 64GB+ RAM / multi-GPU, big multi-shard downloads (60-200GB+):');
+    Writeln(Format('  %-3s | %-12s | %-20s | %-6s | %s', ['ID', 'Key', 'Model Name', 'RAM', 'Description']));
+    Writeln('--------------------------------------------------------------------------------');
+    for I := Low(ModelCatalog) to High(ModelCatalog) do
+      if ModelCatalog[I].Tier = mtServer then
+        Writeln(Format('  %-3d | %-12s | %-20s | %-6s | %s', [
+          ModelCatalog[I].Id,
+          ModelCatalog[I].Key,
+          ModelCatalog[I].Name,
+          IntToStr(ModelCatalog[I].MinRamGB) + 'GB',
+          ModelCatalog[I].Description
+        ]));
   end
   else
   begin
     Writeln;
-    Writeln('  + high-end models available (Qwen 3.6, Gemma 4, ...).');
+    Writeln('  + high-end and server-class models available (Qwen 3.6/3.5, Gemma 4, GLM, GPT-OSS).');
     Writeln('    Run "localpal model catalog --all" to see them.');
   end;
 
