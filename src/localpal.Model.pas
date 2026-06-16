@@ -27,6 +27,8 @@ type
     CreatedAt: string;
   end;
 
+  TModelTier = (mtLowEnd, mtHighEnd);
+
   TCatalogItem = record
     Id: Integer;
     Key: string;
@@ -34,17 +36,22 @@ type
     RepoId: string;
     Filename: string;
     Description: string;
+    Tier: TModelTier;
+    MinRamGB: Integer; // rough RAM/VRAM needed to run the Q4 quant
   end;
 
 const
-  ModelCatalog: array[0..8] of TCatalogItem = (
+  ModelCatalog: array[0..15] of TCatalogItem = (
+    // --- Low-end: run on CPU or small GPUs ---
     (
       Id: 1;
       Key: 'gemmasutra';
       Name: 'Gemmasutra Mini 2B v1';
       RepoId: 'bartowski/Gemmasutra-Mini-2B-v1-GGUF';
       Filename: 'Gemmasutra-Mini-2B-v1-Q4_K_M.gguf';
-      Description: 'A creative writing specialized 2B model.'
+      Description: 'A creative writing specialized 2B model.';
+      Tier: mtLowEnd;
+      MinRamGB: 4
     ),
     (
       Id: 2;
@@ -52,7 +59,9 @@ const
       Name: 'Qwen 2.5 1.5B Instruct';
       RepoId: 'bartowski/Qwen2.5-1.5B-Instruct-GGUF';
       Filename: 'Qwen2.5-1.5B-Instruct-Q4_K_M.gguf';
-      Description: 'Highly capable state-of-the-art 1.5B model with great multilingual support.'
+      Description: 'Highly capable state-of-the-art 1.5B model with great multilingual support.';
+      Tier: mtLowEnd;
+      MinRamGB: 3
     ),
     (
       Id: 3;
@@ -60,7 +69,9 @@ const
       Name: 'Qwen 2.5 3B Instruct';
       RepoId: 'bartowski/Qwen2.5-3B-Instruct-GGUF';
       Filename: 'Qwen2.5-3B-Instruct-Q4_K_M.gguf';
-      Description: 'Excellent balance of speed and reasoning in a 3B package.'
+      Description: 'Excellent balance of speed and reasoning in a 3B package.';
+      Tier: mtLowEnd;
+      MinRamGB: 4
     ),
     (
       Id: 4;
@@ -68,7 +79,9 @@ const
       Name: 'Gemma 2 2B IT';
       RepoId: 'google/gemma-2-2b-it-GGUF';
       Filename: '2b_it_v2.gguf';
-      Description: 'Google''s lightweight state-of-the-art 2B instruction-tuned model.'
+      Description: 'Google''s lightweight state-of-the-art 2B instruction-tuned model.';
+      Tier: mtLowEnd;
+      MinRamGB: 4
     ),
     (
       Id: 5;
@@ -76,7 +89,9 @@ const
       Name: 'Phi 3.5 Mini Instruct';
       RepoId: 'bartowski/Phi-3.5-mini-instruct-GGUF';
       Filename: 'Phi-3.5-mini-instruct-Q4_K_M.gguf';
-      Description: 'Microsoft''s 3.8B model with excellent reasoning, math, and code capabilities.'
+      Description: 'Microsoft''s 3.8B model with excellent reasoning, math, and code capabilities.';
+      Tier: mtLowEnd;
+      MinRamGB: 6
     ),
     (
       Id: 6;
@@ -84,7 +99,9 @@ const
       Name: 'Llama 3.2 1B Instruct';
       RepoId: 'unsloth/Llama-3.2-1B-Instruct-GGUF';
       Filename: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf';
-      Description: 'Meta''s ultra-lightweight 1B parameter model optimized for resource-constrained environments.'
+      Description: 'Meta''s ultra-lightweight 1B parameter model optimized for resource-constrained environments.';
+      Tier: mtLowEnd;
+      MinRamGB: 2
     ),
     (
       Id: 7;
@@ -92,7 +109,9 @@ const
       Name: 'Llama 3.2 3B Instruct';
       RepoId: 'unsloth/Llama-3.2-3B-Instruct-GGUF';
       Filename: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf';
-      Description: 'Meta''s highly versatile and popular 3B parameter conversational model.'
+      Description: 'Meta''s highly versatile and popular 3B parameter conversational model.';
+      Tier: mtLowEnd;
+      MinRamGB: 4
     ),
     (
       Id: 8;
@@ -100,7 +119,9 @@ const
       Name: 'SmolLM2 1.7B Instruct';
       RepoId: 'bartowski/SmolLM2-1.7B-Instruct-GGUF';
       Filename: 'SmolLM2-1.7B-Instruct-Q4_K_M.gguf';
-      Description: 'Hugging Face''s compact and extremely fast 1.7B parameter model.'
+      Description: 'Hugging Face''s compact and extremely fast 1.7B parameter model.';
+      Tier: mtLowEnd;
+      MinRamGB: 3
     ),
     (
       Id: 9;
@@ -108,7 +129,80 @@ const
       Name: 'SmolVLM2 500M Instruct';
       RepoId: 'ggml-org/SmolVLM2-500M-Video-Instruct-GGUF';
       Filename: 'SmolVLM2-500M-Video-Instruct-Q4_K_M.gguf';
-      Description: 'Hugging Face''s ultra-compact 500M multimodal model optimized for video/image understanding.'
+      Description: 'Hugging Face''s ultra-compact 500M multimodal model optimized for video/image understanding.';
+      Tier: mtLowEnd;
+      MinRamGB: 2
+    ),
+    // --- High-end: need a big GPU or 24GB+ of unified memory ---
+    (
+      Id: 10;
+      Key: 'gemma26b';
+      Name: 'Gemma 4 26B-A4B';
+      RepoId: 'unsloth/gemma-4-26B-A4B-it-qat-GGUF';
+      Filename: 'gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf';
+      Description: 'MoE (4B active, QAT); fast and capable - the lightest high-end pick (~14GB file).';
+      Tier: mtHighEnd;
+      MinRamGB: 24
+    ),
+    (
+      Id: 11;
+      Key: 'qwen27b';
+      Name: 'Qwen 3.6 27B';
+      RepoId: 'unsloth/Qwen3.6-27B-GGUF';
+      Filename: 'Qwen3.6-27B-Q4_K_M.gguf';
+      Description: 'Dense 27B; widely cited as the best local coding model. Slower but high quality.';
+      Tier: mtHighEnd;
+      MinRamGB: 32
+    ),
+    (
+      Id: 12;
+      Key: 'gemma31b';
+      Name: 'Gemma 4 31B';
+      RepoId: 'unsloth/gemma-4-31B-it-qat-GGUF';
+      Filename: 'gemma-4-31B-it-qat-UD-Q4_K_XL.gguf';
+      Description: 'Dense 31B (QAT); strong general chat, translation and writing.';
+      Tier: mtHighEnd;
+      MinRamGB: 32
+    ),
+    (
+      Id: 13;
+      Key: 'qwen35b';
+      Name: 'Qwen 3.6 35B-A3B';
+      RepoId: 'unsloth/Qwen3.6-35B-A3B-MTP-GGUF';
+      Filename: 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf';
+      Description: 'MoE (3B active); very fast for its size - the community favorite for local agentic coding.';
+      Tier: mtHighEnd;
+      MinRamGB: 32
+    ),
+    (
+      Id: 14;
+      Key: 'lfm';
+      Name: 'LFM2.5 1.2B Instruct';
+      RepoId: 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF';
+      Filename: 'LFM2.5-1.2B-Instruct-Q4_K_M.gguf';
+      Description: 'Liquid AI''s ultra-fast 1.2B model; great on CPU-only machines (~730MB).';
+      Tier: mtLowEnd;
+      MinRamGB: 2
+    ),
+    (
+      Id: 15;
+      Key: 'qwencoder';
+      Name: 'Qwen 2.5 Coder 7B';
+      RepoId: 'bartowski/Qwen2.5-Coder-7B-Instruct-GGUF';
+      Filename: 'Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf';
+      Description: 'Code-specialized 7B; strong code completion and generation for its size.';
+      Tier: mtLowEnd;
+      MinRamGB: 6
+    ),
+    (
+      Id: 16;
+      Key: 'qwen3coder';
+      Name: 'Qwen 3 Coder 30B-A3B';
+      RepoId: 'unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF';
+      Filename: 'Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf';
+      Description: 'MoE (3B active) coding specialist; fast 30B-class agentic coder.';
+      Tier: mtHighEnd;
+      MinRamGB: 32
     )
   );
 
@@ -130,7 +224,7 @@ type
     function EnsureActiveModel(var AModel: TModelInfo): Boolean;
     procedure SearchHuggingFace(const AQuery: string);
     procedure DownloadModel(const ARepoId, AFilename: string);
-    procedure ShowCatalog;
+    procedure ShowCatalog(AShowHighEnd: Boolean = False);
     function DownloadCatalogItem(const ASelector: string): Boolean;
   end;
 
@@ -505,28 +599,52 @@ begin
   end;
 end;
 
-procedure TModelManager.ShowCatalog;
+procedure TModelManager.ShowCatalog(AShowHighEnd: Boolean = False);
 var
   I: Integer;
 begin
   Writeln('================================================================================');
   Writeln('                                 MODEL CATALOG                                  ');
   Writeln('================================================================================');
+  Writeln('  Low-end models - run on a CPU or a small GPU (good for an offline laptop):');
   Writeln(Format('  %-3s | %-12s | %-25s | %s', ['ID', 'Key', 'Model Name', 'Description']));
   Writeln('--------------------------------------------------------------------------------');
   for I := Low(ModelCatalog) to High(ModelCatalog) do
+    if ModelCatalog[I].Tier = mtLowEnd then
+      Writeln(Format('  %-3d | %-12s | %-25s | %s', [
+        ModelCatalog[I].Id,
+        ModelCatalog[I].Key,
+        ModelCatalog[I].Name,
+        ModelCatalog[I].Description
+      ]));
+
+  if AShowHighEnd then
   begin
-    Writeln(Format('  %-3d | %-12s | %-25s | %s', [
-      ModelCatalog[I].Id,
-      ModelCatalog[I].Key,
-      ModelCatalog[I].Name,
-      ModelCatalog[I].Description
-    ]));
+    Writeln;
+    Writeln('  High-end models - need a big GPU or 24GB+ of unified memory (CPU = very slow):');
+    Writeln(Format('  %-3s | %-12s | %-18s | %-6s | %s', ['ID', 'Key', 'Model Name', 'RAM', 'Description']));
+    Writeln('--------------------------------------------------------------------------------');
+    for I := Low(ModelCatalog) to High(ModelCatalog) do
+      if ModelCatalog[I].Tier = mtHighEnd then
+        Writeln(Format('  %-3d | %-12s | %-18s | %-6s | %s', [
+          ModelCatalog[I].Id,
+          ModelCatalog[I].Key,
+          ModelCatalog[I].Name,
+          IntToStr(ModelCatalog[I].MinRamGB) + 'GB',
+          ModelCatalog[I].Description
+        ]));
+  end
+  else
+  begin
+    Writeln;
+    Writeln('  + high-end models available (Qwen 3.6, Gemma 4, ...).');
+    Writeln('    Run "localpal model catalog --all" to see them.');
   end;
+
   Writeln('================================================================================');
   Writeln('To download a catalog model, run:');
   Writeln('  localpal model download <ID or Key>');
-  Writeln('  Example: localpal model download 8   (or: localpal model download smollm)');
+  Writeln('  Example: localpal model download smollm   (or: localpal model download 8)');
   Writeln('================================================================================');
 end;
 

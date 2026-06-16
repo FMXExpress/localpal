@@ -143,7 +143,9 @@ begin
           FModelMgr.ListModels;
           
         cmdModelCatalog:
-          FModelMgr.ShowCatalog;
+          FModelMgr.ShowCatalog(
+            SameText(FOpts.Arg1, 'all') or SameText(FOpts.Arg1, '--all') or
+            SameText(FOpts.Arg1, 'high'));
           
         cmdModelAdd:
           FModelMgr.AddModel(FOpts.Arg1, FOpts.Arg2);

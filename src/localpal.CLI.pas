@@ -68,7 +68,7 @@ begin
   Writeln;
   Writeln('Model Inventory Commands:');
   Writeln('  model list            List registered models.');
-  Writeln('  model catalog         List the catalog of built-in models available for download.');
+  Writeln('  model catalog [--all] List built-in models (low-end by default; --all adds high-end).');
   Writeln('  model add <name> <p>  Register a GGUF model path or Ollama model tag.');
   Writeln('  model use <name>      Set a model as the active/selected model.');
   Writeln('  model remove <name>   Remove a model from inventory.');
@@ -243,6 +243,8 @@ begin
       else if SameText(LAction, 'catalog') then
       begin
         Result.Command := cmdModelCatalog;
+        if LArgs.Count >= 3 then
+          Result.Arg1 := LArgs[2]; // "all" / "--all" / "high" reveals high-end models
       end
       else if SameText(LAction, 'add') then
       begin
