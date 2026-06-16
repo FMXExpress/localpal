@@ -41,7 +41,7 @@ type
   end;
 
 const
-  ModelCatalog: array[0..12] of TCatalogItem = (
+  ModelCatalog: array[0..15] of TCatalogItem = (
     // --- Low-end: run on CPU or small GPUs ---
     (
       Id: 1;
@@ -171,6 +171,36 @@ const
       RepoId: 'unsloth/Qwen3.6-35B-A3B-MTP-GGUF';
       Filename: 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf';
       Description: 'MoE (3B active); very fast for its size - the community favorite for local agentic coding.';
+      Tier: mtHighEnd;
+      MinRamGB: 32
+    ),
+    (
+      Id: 14;
+      Key: 'lfm';
+      Name: 'LFM2.5 1.2B Instruct';
+      RepoId: 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF';
+      Filename: 'LFM2.5-1.2B-Instruct-Q4_K_M.gguf';
+      Description: 'Liquid AI''s ultra-fast 1.2B model; great on CPU-only machines (~730MB).';
+      Tier: mtLowEnd;
+      MinRamGB: 2
+    ),
+    (
+      Id: 15;
+      Key: 'qwencoder';
+      Name: 'Qwen 2.5 Coder 7B';
+      RepoId: 'bartowski/Qwen2.5-Coder-7B-Instruct-GGUF';
+      Filename: 'Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf';
+      Description: 'Code-specialized 7B; strong code completion and generation for its size.';
+      Tier: mtLowEnd;
+      MinRamGB: 6
+    ),
+    (
+      Id: 16;
+      Key: 'qwen3coder';
+      Name: 'Qwen 3 Coder 30B-A3B';
+      RepoId: 'unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF';
+      Filename: 'Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf';
+      Description: 'MoE (3B active) coding specialist; fast 30B-class agentic coder.';
       Tier: mtHighEnd;
       MinRamGB: 32
     )
